@@ -510,6 +510,61 @@ async function start() {
           /*
            * Automatically learn useful things.
            */
+          /*
+           * Automatically learn useful things.
+           * Only learn from clear statements.
+           */
+
+          const autoLearn = [
+            {
+              pattern: /^(?:my favorite|my favourite) (.+?) is (.+)$/i,
+              category: "preferences"
+            },
+            {
+              pattern: /^i (?:prefer|like) (.+)$/i,
+              category: "preferences"
+            },
+            {
+              pattern: /^i (?:don't like|do not like|hate) (.+)$/i,
+              category: "preferences"
+            },
+            {
+              pattern: /^(?:i am|i['’]m) (?:building|working on) (?:a project called |a project named )?(.+)$/i,
+              category: "projects"
+            },
+            {
+              pattern: /^(?:my|the) (?:main )?project is (.+)$/i,
+              category: "projects"
+            }
+          ];
+
+          for (const rule of autoLearn) {
+            const match = prompt.match(rule.pattern);
+
+            if (!match) continue;
+
+            const value = match
+              .slice(1)
+              .filter(Boolean)
+              .join(" is ")
+              .trim();
+
+            if (value.length < 2 || value.length > 200) continue;
+
+            if (!memory[rule.category].includes(value)) {
+              memory[rule.category].push(value);
+              saveMemory(memory);
+
+              console.log(
+                "🧠 Auto-memory saved:",
+                rule.category,
+                value
+              );
+            }
+
+            break;
+          }
+
           
 
           /*
