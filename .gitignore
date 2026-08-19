@@ -1,0 +1,12 @@
+node_modules/
+.env
+
+data/whatsapp-auth/
+data/conversations/
+data/memory.json
+
+*.backup.js
+*.bak
+
+npm-debug.log*
+.DS_Store
