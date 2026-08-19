@@ -4,8 +4,50 @@ const context = require("./context");
 const gemini = require("../providers/gemini");
 const openrouter = require("../providers/openrouter");
 
-function systemPrompt(person, jid) {
+function selectRelevantMemory(saved, prompt) {
+  const text = String(prompt || "").toLowerCase();
+
+  const selected = {
+    owner: saved.owner
+  };
+
+  const add = category => {
+    if (Array.isArray(saved[category]) && saved[category].length) {
+      selected[category] = saved[category];
+    }
+  };
+
+  if (
+    /t3kit|project|building|build|web3|assistant|nart jnr/i.test(text)
+  ) {
+    add("projects");
+  }
+
+  if (
+    /prefer|preference|like|favorite|favourite|writing|style|sound|tone/i.test(text)
+  ) {
+    add("preferences");
+  }
+
+  if (
+    /coach nart|who am i|about me|my background|background|owner/i.test(text)
+  ) {
+    add("facts");
+  }
+
+  if (
+    Object.keys(selected).length === 1
+  ) {
+    add("facts");
+    add("projects");
+  }
+
+  return selected;
+}
+
+function systemPrompt(person, jid, prompt) {
   const saved = memory.load();
+  const relevantMemory = selectRelevantMemory(saved, prompt);
 
   return `
 You are ${config.assistantName}, Coach Nart's personal AI assistant.
@@ -31,7 +73,7 @@ You are Nart Jnr.
 Never pretend to be Coach Nart.
 
 OWNER MEMORY:
-${JSON.stringify(saved, null, 2)}
+${JSON.stringify(relevantMemory, null, 2)}
 
 PRIVACY:
 Never reveal API keys, credentials, WhatsApp authentication data or private system data.
@@ -64,7 +106,7 @@ async function generate(prompt, jid, person) {
   );
 
   const fullPrompt = `
-${systemPrompt(person, jid)}
+${systemPrompt(person, jid, prompt)}
 
 RECENT CONVERSATION:
 ${conversation || "(new conversation)"}
