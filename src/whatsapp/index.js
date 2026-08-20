@@ -3,12 +3,15 @@ require("dotenv").config();
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  downloadContentFromMessage
 } = require("@whiskeysockets/baileys");
 
 const fs = require("fs");
 const path = require("path");
 const brain = require("../core/brain");
+const music = require("../core/music");
+const { handleCommand } = require("../commands/router");
 
 const MEMORY_FILE = path.join(
   __dirname,
@@ -21,6 +24,156 @@ const HISTORY_DIR = path.join(
 );
 
 const MAX_HISTORY = 20;
+
+const GROUP_STATS_FILE = path.join(
+  __dirname,
+  "../../data/group-stats.json"
+);
+
+function loadGroupStats() {
+  try {
+    return JSON.parse(
+      fs.readFileSync(GROUP_STATS_FILE, "utf8")
+    );
+  } catch {
+    return {};
+  }
+}
+
+function saveGroupStats(stats) {
+  fs.mkdirSync(
+    path.dirname(GROUP_STATS_FILE),
+    { recursive: true }
+  );
+
+  fs.writeFileSync(
+    GROUP_STATS_FILE,
+    JSON.stringify(stats, null, 2)
+  );
+}
+
+function trackGroupMessage(msg, jid, text) {
+  if (!jid || !jid.endsWith("@g.us")) {
+    return;
+  }
+
+  const stats = loadGroupStats();
+
+  if (!stats[jid]) {
+    stats[jid] = {
+      messages: 0,
+      users: {},
+      hours: {},
+      commands: 0,
+      lastActivity: null
+    };
+  }
+
+  const group = stats[jid];
+
+  const sender =
+    msg.key?.participant ||
+    msg.participant ||
+    msg.key?.remoteJid ||
+    "unknown";
+
+  const hour =
+    new Date().getHours();
+
+  group.messages += 1;
+
+  group.users[sender] =
+    (group.users[sender] || 0) + 1;
+
+  group.hours[hour] =
+    (group.hours[hour] || 0) + 1;
+
+  if (text && isAddressedToNart(text)) {
+    group.commands += 1;
+  }
+
+  group.lastActivity =
+    new Date().toISOString();
+
+  saveGroupStats(stats);
+}
+
+
+
+
+const MEDIA_DIR = path.join(
+  __dirname,
+  "../../data/media"
+);
+
+async function saveIncomingMedia(msg) {
+  const message = msg.message || {};
+
+  let media;
+  let type;
+
+  if (message.audioMessage) {
+    media = message.audioMessage;
+    type = "audio";
+  } else if (message.documentMessage) {
+    media = message.documentMessage;
+    type = "document";
+  } else {
+    return null;
+  }
+
+  fs.mkdirSync(MEDIA_DIR, { recursive: true });
+
+  const stream = await downloadContentFromMessage(
+    media,
+    type
+  );
+
+  const chunks = [];
+
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+
+  const buffer = Buffer.concat(chunks);
+
+  let extension = "bin";
+
+  if (type === "audio") {
+    const mime = media.mimetype || "";
+
+    if (mime.includes("mpeg")) extension = "mp3";
+    else if (mime.includes("ogg")) extension = "ogg";
+    else if (mime.includes("wav")) extension = "wav";
+    else if (mime.includes("mp4")) extension = "m4a";
+    else extension = "audio";
+  } else {
+    const original = media.fileName || "";
+
+    if (original.includes(".")) {
+      extension = original
+        .split(".")
+        .pop()
+        .replace(/[^a-zA-Z0-9]/g, "")
+        .slice(0, 10) || "bin";
+    }
+  }
+
+  const filename = `media-${Date.now()}.${extension}`;
+  const output = path.join(MEDIA_DIR, filename);
+
+  fs.writeFileSync(output, buffer);
+
+  return {
+    type,
+    filename,
+    path: output,
+    size: buffer.length,
+    mimetype: media.mimetype || null,
+    originalName: media.fileName || null
+  };
+}
+
 
 function loadMemory() {
   try {
@@ -296,19 +449,8 @@ async function start() {
             !msg?.message
           ) continue;
 
-          if (
-            msg.key.fromMe
-          ) continue;
-
           const jid =
             msg.key.remoteJid;
-
-        // 🛡️ HARD FIREWALL
-        // Nart NEVER responds in WhatsApp groups.
-        if (jid.endsWith("@g.us")) {
-          console.log("🚫 Group message ignored.");
-          continue;
-        }
 
         // Ignore broadcasts/status.
         if (
@@ -323,10 +465,32 @@ async function start() {
             "status@broadcast"
           ) continue;
 
+          const mediaMessage =
+
+
+            msg.message?.audioMessage ||
+
+
+            msg.message?.documentMessage;
+
+
+
           const text =
+
+
             extractText(msg);
 
-          if (!text) continue;
+
+
+          if (!text && !mediaMessage) continue;
+
+          // 📊 Track every group message before
+          // checking whether Nart was called.
+          trackGroupMessage(
+            msg,
+            jid,
+            text
+          );
 
           const personName =
             msg.pushName ||
@@ -345,10 +509,165 @@ async function start() {
             continue;
           }
 
+          if (mediaMessage) {
+
+
+            try {
+
+
+              const savedMedia =
+
+
+                await saveIncomingMedia(msg);
+
+
+
+              if (savedMedia) {
+
+
+                console.log(
+
+
+                  "🎵 Media received:",
+
+
+                  savedMedia.filename
+
+
+                );
+
+
+
+                await sock.sendMessage(
+
+
+                  jid,
+
+
+                  {
+
+
+                    text:
+
+
+                      savedMedia.type === "audio"
+
+
+              ? "🎵 Got the audio and saved it as " + savedMedia.filename + ".\n\nI'm ready to work with it."
+              : "📁 Got the file and saved it as " + savedMedia.filename + ".\n\nI'm ready to work with it."
+
+
+
+                  },
+
+
+                  {
+
+
+                    quoted: msg
+
+
+                  }
+
+
+                );
+
+
+              }
+
+
+            } catch (error) {
+
+
+              console.error(
+
+
+                "❌ Media download error:",
+
+
+                error.stack || error.message
+
+
+              );
+
+
+
+              await sock.sendMessage(
+
+
+                jid,
+
+
+                {
+
+
+                  text:
+
+
+                    "I received the file, but couldn't load it properly. Try sending it again."
+
+
+                },
+
+
+                {
+
+
+                  quoted: msg
+
+
+                }
+
+
+              );
+
+
+            }
+
+
+
+            continue;
+
+
+          }
+
+
+
           const prompt =
+
+
             removeNartName(text);
 
-          if (!prompt) {
+      const isGroup = jid.endsWith("@g.us");
+
+        console.log("🧪 MESSAGE DEBUG:", {
+          jid,
+          isGroup,
+          prompt,
+          addressed: isAddressedToNart(text),
+          fromMe: msg.key.fromMe,
+          participant: msg.key.participant || null
+        });
+
+
+      console.log("🧠 ROUTER REACHED:", prompt);
+
+            /* MASTER_COMMAND_ROUTER */
+      console.log("🧠 CALLING HANDLE_COMMAND...");
+      const commandHandled = await handleCommand({
+        prompt,
+        sock,
+        jid,
+        msg,
+        isGroup
+      });
+
+      console.log("🧠 COMMAND RESULT:", commandHandled);
+      if (commandHandled) {
+        continue;
+      }
+
+                if (!prompt) {
 
             await sock.sendMessage(
               jid,
