@@ -2,14 +2,81 @@ const fs = require("fs");
 const path = require("path");
 const marketEngine = require("./src/tools/marketEngine");
 const market = require("./src/tools/market");
-const whatsapp = require("./src/whatsapp");
+
+const SIGNALS_FILE = path.join(
+  __dirname,
+  "data",
+  "signals.json"
+);
+
+function saveSignal(symbol, plan) {
+  try {
+    let store = {
+      signals: []
+    };
+
+    if (fs.existsSync(SIGNALS_FILE)) {
+      try {
+        store = JSON.parse(
+          fs.readFileSync(SIGNALS_FILE, "utf8")
+        );
+      } catch {
+        store = {
+          signals: []
+        };
+      }
+    }
+
+    const signal = {
+      id: `${symbol}-${Date.now()}`,
+      symbol,
+      direction: plan.direction || null,
+      entry: plan.entry ?? plan.trade?.entry ?? null,
+      stop: plan.stop ?? plan.trade?.stop ?? null,
+      target: plan.target ?? plan.trade?.target ?? null,
+      riskReward:
+        plan.riskReward ??
+        plan.trade?.rr ??
+        null,
+      status: "ENTRY CONFIRMED",
+      timeframe:
+        plan.timeframe ||
+        plan.executionTimeframe ||
+        null,
+      timestamp: new Date().toISOString()
+    };
+
+    store.signals.unshift(signal);
+
+    store.signals = store.signals.slice(0, 50);
+
+    fs.writeFileSync(
+      SIGNALS_FILE,
+      JSON.stringify(store, null, 2)
+    );
+
+    console.log(
+      `🌐 SIGNAL SAVED FOR WEB: ${symbol} ${signal.direction}`
+    );
+
+    return signal;
+
+  } catch (err) {
+    console.log(
+      "❌ Failed saving web signal:",
+      err.message
+    );
+
+    return null;
+  }
+}
 const access = require("./src/core/access");
 
-const INTERVAL = 60 * 1000;
+const INTERVAL = 5 * 60 * 1000;
 
 // Global WhatsApp alert cooldown.
 // Change this number later if needed.
-const GLOBAL_ALERT_COOLDOWN_MINUTES = 30;
+const GLOBAL_ALERT_COOLDOWN_MINUTES = 5;
 const GLOBAL_ALERT_COOLDOWN =
   GLOBAL_ALERT_COOLDOWN_MINUTES * 60 * 1000;
 
@@ -56,17 +123,7 @@ async function getWhatsAppSocket() {
     return activeWhatsAppSocket;
   }
 
-  for (let i = 0; i < 30; i++) {
-    const sock = whatsapp.getSocket?.();
-
-    if (sock) {
-      activeWhatsAppSocket = sock;
-      return sock;
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  }
-
+  console.log("❌ WhatsApp socket not injected into scanner yet.");
   return null;
 }
 
@@ -120,7 +177,6 @@ async function sendWhatsAppAlert(symbol, plan) {
   let ownerJid =
     activeWhatsAppJid ||
     sock?.user?.id ||
-    whatsapp.getOwnerJid?.() ||
     null;
 
   // Normalize our own device JID to the normal WhatsApp phone JID.
@@ -233,10 +289,145 @@ async function sendWhatsAppAlert(symbol, plan) {
   }
 }
 
+
+function updateSignalLifecycle(symbol, currentPrice) {
+  try {
+    if (!fs.existsSync(SIGNALS_FILE)) {
+      return;
+    }
+
+    const store = JSON.parse(
+      fs.readFileSync(SIGNALS_FILE, "utf8")
+    );
+
+    if (!Array.isArray(store.signals)) {
+      return;
+    }
+
+    const price = Number(currentPrice);
+
+    if (!Number.isFinite(price)) {
+      return;
+    }
+
+    let changed = false;
+
+    for (const signal of store.signals) {
+      if (
+        signal.symbol !== symbol ||
+        signal.status !== "ACTIVE"
+      ) {
+        continue;
+      }
+
+      const stop = Number(signal.stop);
+      const target = Number(signal.target);
+
+      if (
+        !Number.isFinite(stop) ||
+        !Number.isFinite(target)
+      ) {
+        continue;
+      }
+
+      const direction =
+        String(signal.direction || "").toUpperCase();
+
+      if (direction === "LONG") {
+
+        if (price <= stop) {
+          signal.status = "INVALIDATED";
+          signal.invalidatedAt =
+            new Date().toISOString();
+          signal.updatedAt =
+            signal.invalidatedAt;
+          signal.exitPrice = price;
+
+          console.log(
+            `❌ ${symbol} LONG INVALIDATED @ ${price}`
+          );
+
+          changed = true;
+          continue;
+        }
+
+        if (price >= target) {
+          signal.status = "TARGET_HIT";
+          signal.targetHitAt =
+            new Date().toISOString();
+          signal.updatedAt =
+            signal.targetHitAt;
+          signal.exitPrice = price;
+
+          console.log(
+            `🎯 ${symbol} LONG TARGET HIT @ ${price}`
+          );
+
+          changed = true;
+          continue;
+        }
+      }
+
+      if (direction === "SHORT") {
+
+        if (price >= stop) {
+          signal.status = "INVALIDATED";
+          signal.invalidatedAt =
+            new Date().toISOString();
+          signal.updatedAt =
+            signal.invalidatedAt;
+          signal.exitPrice = price;
+
+          console.log(
+            `❌ ${symbol} SHORT INVALIDATED @ ${price}`
+          );
+
+          changed = true;
+          continue;
+        }
+
+        if (price <= target) {
+          signal.status = "TARGET_HIT";
+          signal.targetHitAt =
+            new Date().toISOString();
+          signal.updatedAt =
+            signal.targetHitAt;
+          signal.exitPrice = price;
+
+          console.log(
+            `🎯 ${symbol} SHORT TARGET HIT @ ${price}`
+          );
+
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      fs.writeFileSync(
+        SIGNALS_FILE,
+        JSON.stringify(store, null, 2)
+      );
+    }
+
+  } catch (error) {
+    console.error(
+      "❌ Signal lifecycle error:",
+      error.message
+    );
+  }
+}
+
 async function analyze(symbol) {
   try {
     const result =
       await marketEngine.analyzeMarket(symbol);
+
+    // Keep existing signals synchronized with live price.
+    updateSignalLifecycle(
+      symbol,
+      result?.price
+    );
 
     const execution =
       result?.tradePlan?.execution;
@@ -285,6 +476,13 @@ async function analyze(symbol) {
 
     lastGlobalAlertAt = now;
 
+    // Save the exact confirmed signal for the web dashboard.
+    saveSignal(
+      symbol,
+      result.tradePlan
+    );
+
+    // Existing WhatsApp delivery remains unchanged.
     await sendWhatsAppAlert(
       symbol,
       result.tradePlan
@@ -329,7 +527,10 @@ async function start() {
     `👑 Owner IDs loaded: ${ownerIds.join(", ") || "NONE"}`
   );
 
-  await getWhatsAppSocket();
+  if (!activeWhatsAppSocket) {
+    console.log("⏳ Waiting for WhatsApp socket...");
+    return;
+  }
 
   await runScanner();
 

@@ -21,3 +21,15 @@ data/media/
 *.backup
 *.broken-backup
 *.bak*
+
+# Private subscription/payment data
+data/subscriptions.json
+
+# Runtime / private data
+data/auth.json
+data/signals.json
+data/whatsapp-auth/
+data/whatsapp-auth.broken-*/
+nart-cookies.txt
+=
+src/tools/market.js.before-dns-fix

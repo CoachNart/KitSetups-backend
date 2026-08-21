@@ -363,9 +363,6 @@ Your goal is to have a natural conversation.
 
 
 
-const tradeScanner = require("../../scanner");
-let scannerStarted = false;
-
 async function start() {
 
   const {
@@ -400,26 +397,6 @@ async function start() {
         console.log(
           "\n🔥 Nart Jnr is connected to WhatsApp.\n"
         );
-
-        console.log("👑 MY WHATSAPP ID:");
-        console.log("   sock.user:", sock.user?.id || "NONE");
-        console.log("   creds.me:", state?.creds?.me?.id || "NONE");
-        console.log("   creds.lid:", state?.creds?.me?.lid || "NONE");
-
-        if (!scannerStarted) {
-          scannerStarted = true;
-
-          tradeScanner.setWhatsAppSocket(sock);
-
-          console.log("🚀 Starting trade scanner...");
-
-          tradeScanner.start().catch(err => {
-            console.error(
-              "❌ Trade scanner crashed:",
-              err.stack || err.message
-            );
-          });
-        }
       }
 
       if (
@@ -474,29 +451,6 @@ async function start() {
 
           const jid =
             msg.key.remoteJid;
-
-          console.log("📥 UPSERT:", {
-            remoteJid: msg.key?.remoteJid,
-            fromMe: msg.key?.fromMe,
-            participant: msg.key?.participant,
-            addressingMode: msg.key?.addressingMode
-          });
-
-          // Capture the sender of a private incoming DM.
-          if (
-            !msg.key?.fromMe &&
-            msg.key?.remoteJid &&
-            !msg.key.remoteJid.endsWith("@g.us") &&
-            !msg.key.remoteJid.endsWith("@broadcast")
-          ) {
-            lastOwnerJid =
-              msg.key.remoteJid;
-
-            console.log(
-              "👑 LAST PRIVATE DM JID:",
-              lastOwnerJid
-            );
-          }
 
         // Ignore broadcasts/status.
         if (
@@ -1018,47 +972,6 @@ async function start() {
       }
     }
   );
-
-  // Request pairing code when no WhatsApp session is registered.
-  const phoneNumber =
-    process.env.WHATSAPP_PHONE_NUMBER?.replace(
-      /[^0-9]/g,
-      ""
-    );
-
-  if (
-    phoneNumber &&
-    !state.creds.registered
-  ) {
-    console.log(
-      "📱 Pairing code will be requested..."
-    );
-
-    setTimeout(async () => {
-      try {
-        if (!state.creds.registered) {
-          const code =
-            await sock.requestPairingCode(
-              phoneNumber
-            );
-
-          console.log(
-            "\n🔐 WHATSAPP PAIRING CODE:",
-            code
-          );
-
-          console.log(
-            "📱 WhatsApp → Linked Devices → Link with phone number.\n"
-          );
-        }
-      } catch (err) {
-        console.error(
-          "❌ Pairing-code request failed:",
-          err.message
-        );
-      }
-    }, 5000);
-  }
 }
 
 start().catch(
