@@ -588,12 +588,24 @@ async function handleRequest(req, res) {
 
 
   if (req.method === "OPTIONS") {
+    const origin =
+      req.headers.origin || "";
+
+    const allowedOrigin =
+      origin === "https://nart-jnr-ui.vercel.app"
+        ? origin
+        : "https://nart-jnr-ui.vercel.app";
+
     res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin":
+        allowedOrigin,
+      "Access-Control-Allow-Credentials":
+        "true",
       "Access-Control-Allow-Methods":
         "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers":
         "Content-Type",
+      "Vary": "Origin",
     });
 
     return res.end();
