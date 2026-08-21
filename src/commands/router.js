@@ -2,6 +2,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const music = require("../core/music");
+const marketEngine = require("../tools/marketEngine");
+const { formatMarketAnalysis } = require("../tools/marketResponse");
 
 const STATS_FILE = path.join(
   __dirname,
@@ -78,6 +80,223 @@ async function handleCommand({
   const command = normalizeCommand(prompt);
 
   if (!command) return false;
+
+  // =====================================================
+  // ACCESS CONTROL
+  // =====================================================
+
+  const senderId = require("../core/access").identifySender({
+    msg,
+    jid,
+    isGroup
+  });
+
+  // APPROVE USER
+  if (/^(?:approve|allow)$/i.test(command)) {
+    const access = require("../core/access");
+
+    if (!access.isOwner(senderId)) {
+      console.log("🔒 Unauthorized approve attempt:", senderId);
+      return true;
+    }
+
+    const quotedParticipant =
+      msg?.message?.extendedTextMessage?.contextInfo?.participant ||
+      msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.participant ||
+      null;
+
+    if (!quotedParticipant) {
+      await sock.sendMessage(
+        jid,
+        {
+          text:
+            "⚠️ Reply to the person's message with:\n\n" +
+            "*Nart, approve*"
+        },
+        { quoted: msg }
+      );
+
+      return true;
+    }
+
+    access.approve(quotedParticipant);
+
+    await sock.sendMessage(
+      jid,
+      {
+        text:
+          `✅ *ACCESS APPROVED*\n\n` +
+          `User: ${quotedParticipant}\n\n` +
+          `They can now use Nart Jnr.`
+      },
+      { quoted: msg }
+    );
+
+    console.log(
+      "👑 OWNER APPROVED:",
+      quotedParticipant
+    );
+
+    return true;
+  }
+
+  // REVOKE USER
+  if (/^(?:revoke|remove)$/i.test(command)) {
+    const access = require("../core/access");
+
+    if (!access.isOwner(senderId)) {
+      console.log("🔒 Unauthorized revoke attempt:", senderId);
+      return true;
+    }
+
+    const quotedParticipant =
+      msg?.message?.extendedTextMessage?.contextInfo?.participant ||
+      msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.participant ||
+      null;
+
+    if (!quotedParticipant) {
+      await sock.sendMessage(
+        jid,
+        {
+          text:
+            "⚠️ Reply to the person's message with:\n\n" +
+            "*Nart, revoke*"
+        },
+        { quoted: msg }
+      );
+
+      return true;
+    }
+
+    const revoked =
+      access.revoke(quotedParticipant);
+
+    if (revoked) {
+      await sock.sendMessage(
+        jid,
+        {
+          text:
+            `🚫 *ACCESS REVOKED*\n\n` +
+            `User: ${quotedParticipant}`
+        },
+        { quoted: msg }
+      );
+
+      console.log(
+        "🚫 OWNER REVOKED:",
+        quotedParticipant
+      );
+    } else {
+      await sock.sendMessage(
+        jid,
+        {
+          text:
+            `⚠️ This user does not currently have approved access.`
+        },
+        { quoted: msg }
+      );
+    }
+
+    return true;
+  }
+
+  // LIST ACCESS
+  if (
+    /^(?:access|access list|who has access)$/i.test(command)
+  ) {
+    const access = require("../core/access");
+
+    if (!access.isOwner(senderId)) {
+      console.log(
+        "🔒 Unauthorized access-list attempt:",
+        senderId
+      );
+      return true;
+    }
+
+    const data = access.list();
+
+    const owners =
+      data.owner?.ids?.length
+        ? data.owner.ids
+            .map(id => `👑 ${id}`)
+            .join("\n")
+        : "None";
+
+    const approved =
+      data.approved?.length
+        ? data.approved
+            .map(id => `✅ ${id}`)
+            .join("\n")
+        : "None";
+
+    await sock.sendMessage(
+      jid,
+      {
+        text:
+          `🔐 *NART JNR ACCESS*\n\n` +
+          `*OWNER*\n${owners}\n\n` +
+          `*APPROVED USERS*\n${approved}`
+      },
+      { quoted: msg }
+    );
+
+    return true;
+  }
+
+  // =====================================================
+  // MARKET ANALYSIS
+  // =====================================================
+
+  const marketMatch = command.match(
+    /^(?:analyze|analyse|market|check)\s+([A-Za-z0-9]+)$/i
+  );
+
+  if (marketMatch) {
+    let symbol = marketMatch[1].toUpperCase();
+
+    if (!symbol.endsWith("USDT")) {
+      symbol += "USDT";
+    }
+
+    try {
+      console.log(`📊 Market analysis: ${symbol}`);
+
+      const result =
+        await marketEngine.analyzeMarket(symbol);
+
+      const response =
+        formatMarketAnalysis(result);
+
+      await sock.sendMessage(
+        jid,
+        {
+          text: response
+        },
+        { quoted: msg }
+      );
+
+      console.log(`✅ Market analysis sent: ${symbol}`);
+
+    } catch (error) {
+      console.error(
+        "❌ Market analysis error:",
+        error.stack || error.message
+      );
+
+      await sock.sendMessage(
+        jid,
+        {
+          text:
+            `😭 I couldn't analyze ${symbol} right now.\\n\\n` +
+            `${error.message || "Market engine unavailable."}`
+        },
+        { quoted: msg }
+      );
+    }
+
+    return true;
+  }
 
   // =====================================================
   // HELP

@@ -10,3 +10,14 @@ data/memory.json
 
 npm-debug.log*
 .DS_Store
+
+# Runtime data / logs
+data/group-stats.json
+data/access.json
+data/media/
+*.log
+
+# Backups / temporary copies
+*.backup
+*.broken-backup
+*.bak*

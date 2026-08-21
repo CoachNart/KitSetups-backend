@@ -26,7 +26,8 @@ async function generate(prompt) {
           role: "user",
           content: prompt
         }
-      ]
+      ],
+      max_tokens: 4096
     });
 
   return (

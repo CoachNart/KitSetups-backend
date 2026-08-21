@@ -363,6 +363,9 @@ Your goal is to have a natural conversation.
 
 
 
+const tradeScanner = require("../../scanner");
+let scannerStarted = false;
+
 async function start() {
 
   const {
@@ -397,6 +400,26 @@ async function start() {
         console.log(
           "\n🔥 Nart Jnr is connected to WhatsApp.\n"
         );
+
+        console.log("👑 MY WHATSAPP ID:");
+        console.log("   sock.user:", sock.user?.id || "NONE");
+        console.log("   creds.me:", state?.creds?.me?.id || "NONE");
+        console.log("   creds.lid:", state?.creds?.me?.lid || "NONE");
+
+        if (!scannerStarted) {
+          scannerStarted = true;
+
+          tradeScanner.setWhatsAppSocket(sock);
+
+          console.log("🚀 Starting trade scanner...");
+
+          tradeScanner.start().catch(err => {
+            console.error(
+              "❌ Trade scanner crashed:",
+              err.stack || err.message
+            );
+          });
+        }
       }
 
       if (
@@ -451,6 +474,29 @@ async function start() {
 
           const jid =
             msg.key.remoteJid;
+
+          console.log("📥 UPSERT:", {
+            remoteJid: msg.key?.remoteJid,
+            fromMe: msg.key?.fromMe,
+            participant: msg.key?.participant,
+            addressingMode: msg.key?.addressingMode
+          });
+
+          // Capture the sender of a private incoming DM.
+          if (
+            !msg.key?.fromMe &&
+            msg.key?.remoteJid &&
+            !msg.key.remoteJid.endsWith("@g.us") &&
+            !msg.key.remoteJid.endsWith("@broadcast")
+          ) {
+            lastOwnerJid =
+              msg.key.remoteJid;
+
+            console.log(
+              "👑 LAST PRIVATE DM JID:",
+              lastOwnerJid
+            );
+          }
 
         // Ignore broadcasts/status.
         if (
