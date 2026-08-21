@@ -64,8 +64,7 @@ function getBias(snapshot) {
 
   const states = timeframes.map(tf => ({
     timeframe: tf,
-    trend:
-      snapshot.timeframes?.[tf]?.structure?.trend
+    trend: snapshot.timeframes?.[tf]?.structure?.trend
   }));
 
   const bullish = states.filter(
@@ -76,34 +75,61 @@ function getBias(snapshot) {
     x => x.trend === "bearish"
   );
 
+  const weeklyContext =
+    snapshot.weeklyContext ||
+    snapshot.timeframes?.["1w"]?.weeklyContext ||
+    snapshot.timeframes?.["1w"]?.weeklyCRT ||
+    null;
+
+  const weeklyBullish =
+    weeklyContext?.direction === "bullish";
+
+  const weeklyBearish =
+    weeklyContext?.direction === "bearish";
+
+  /*
+   * Weekly context is a bias filter, NOT a mandatory
+   * trade-condition gate.
+   *
+   * Execution still requires:
+   * POI -> 15M sweep -> displacement -> BOS -> RR.
+   */
+
+  let bias = "neutral";
+
   if (
     bullish.length >= 2 &&
     bullish.length > bearish.length
   ) {
-    return {
-      bias: "bullish",
-      bullishCount: bullish.length,
-      bearishCount: bearish.length,
-      states
-    };
+    bias = "bullish";
   }
 
   if (
     bearish.length >= 2 &&
     bearish.length > bullish.length
   ) {
-    return {
-      bias: "bearish",
-      bullishCount: bullish.length,
-      bearishCount: bearish.length,
-      states
-    };
+    bias = "bearish";
+  }
+
+  /*
+   * Weekly live context gets priority when it clearly
+   * confirms the lower-timeframe directional bias.
+   */
+  if (weeklyBullish && bullish.length >= 1) {
+    bias = "bullish";
+  }
+
+  if (weeklyBearish && bearish.length >= 1) {
+    bias = "bearish";
   }
 
   return {
-    bias: "neutral",
+    bias,
     bullishCount: bullish.length,
     bearishCount: bearish.length,
+    weeklyContext,
+    weeklyBullish,
+    weeklyBearish,
     states
   };
 }
@@ -635,10 +661,7 @@ function detectDisplacement(
  * latest closed candle closes below the previous local low.
  */
 
-function detectBOS(
-  tf,
-  direction
-) {
+function detectBOS(tf, direction) {
   const candles = closedCandles(tf);
 
   if (candles.length < 5) {
@@ -649,8 +672,7 @@ function detectBOS(
   }
 
   const displacementCandle =
-    tf?.displacement?.candle ||
-    candles.at(-1);
+    tf?.displacement?.candle || candles.at(-1);
 
   const displacementTime =
     Date.parse(displacementCandle?.openTime);
@@ -662,79 +684,70 @@ function detectBOS(
     };
   }
 
+  const sweepCandle = tf?.sweep?.candle;
+  const sweepTime = Date.parse(sweepCandle?.openTime);
+
+  if (!Number.isFinite(sweepTime)) {
+    return {
+      detected: false,
+      direction
+    };
+  }
+
   /*
-   * BOS must break structure that existed BEFORE
-   * the displacement candle.
+   * BOS structure:
    *
-   * Do not allow the displacement candle or any candle
-   * after it to create the BOS level.
+   * sweep
+   *   ↓
+   * post-sweep structure
+   *   ↓
+   * displacement
+   *   ↓
+   * latest close breaks that structure
    */
-  const preDisplacementCandles =
-    candles.filter(c => {
-      const time = Date.parse(c?.openTime);
 
-      return (
-        Number.isFinite(time) &&
-        time < displacementTime
-      );
-    });
+  const structureCandles = candles.filter(c => {
+    const time = Date.parse(c?.openTime);
 
-  if (preDisplacementCandles.length < 5) {
-    return {
-      detected: false,
-      direction
-    };
-  }
-
-  const swings =
-    direction === "LONG"
-      ? findSwingHighs(preDisplacementCandles)
-      : findSwingLows(preDisplacementCandles);
-
-  const eligibleSwings =
-    swings.filter(swing =>
-      finite(swing?.price) !== null
+    return (
+      Number.isFinite(time) &&
+      time > sweepTime &&
+      time < displacementTime
     );
+  });
 
-  if (eligibleSwings.length === 0) {
-    console.log("===== BOS INTERNAL DEBUG =====");
-    console.log("direction:", direction);
-    console.log("displacementTime:", displacementTime);
-    console.log("candles:", candles.length);
-    console.log("swings:", swings);
-    console.log("eligibleSwings:", eligibleSwings);
-
+  if (structureCandles.length === 0) {
     return {
       detected: false,
-      direction
+      direction,
+      reason: "No post-sweep structure before displacement"
     };
   }
 
-  /*
-   * Latest structural level that existed before
-   * displacement.
-   */
-  const structuralSwing =
-    eligibleSwings.at(-1);
+  let level = null;
 
-  const level =
-    finite(structuralSwing?.price);
+  if (direction === "LONG") {
+    level = Math.max(
+      ...structureCandles
+        .map(c => finite(c?.high))
+        .filter(x => x !== null)
+    );
+  } else {
+    level = Math.min(
+      ...structureCandles
+        .map(c => finite(c?.low))
+        .filter(x => x !== null)
+    );
+  }
 
-  const latest =
-    candles.at(-1);
+  const latest = candles.at(-1);
+  const close = finite(latest?.close);
 
-  const close =
-    finite(latest?.close);
-
-  if (
-    level === null ||
-    close === null
-  ) {
+  if (level === null || close === null) {
     return {
       detected: false,
       direction,
       level,
-      swing: structuralSwing,
       candle: latest
     };
   }
@@ -748,11 +761,9 @@ function detectBOS(
     detected,
     direction,
     level,
-    swing: structuralSwing,
     candle: latest
   };
 }
-
 /*
  * ---------------------------------------------------------
  * EXECUTION
@@ -1219,6 +1230,7 @@ function getExecution(
 
   const bosTf = {
     ...m15,
+    sweep,
     displacement
   };
 

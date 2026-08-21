@@ -42,7 +42,11 @@ async function analyzeMarket(symbol = "BTCUSDT") {
       snapshot.ticker.lastPrice,
 
     alignment:
-      alignmentResult
+      alignmentResult,
+    weeklyContext:
+      analyzed.timeframes?.["1w"]?.weeklyContext ||
+      analyzed.timeframes?.["1w"]?.weeklyCRT ||
+      null
   };
 
   const plan =
@@ -64,6 +68,8 @@ async function analyzeMarket(symbol = "BTCUSDT") {
     alignment:
       alignmentResult,
 
+    weeklyContext:
+      enrichedSnapshot.weeklyContext,
     tradePlan:
       plan,
 

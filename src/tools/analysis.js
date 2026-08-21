@@ -454,6 +454,207 @@ function detectFVGs(candles) {
  * ---------------------------------------------------------
  */
 
+
+function analyzeWeeklyCRT(candles) {
+  const all = Array.isArray(candles) ? candles : [];
+  const closed = getClosedCandles(all);
+  const live = getLiveCandle(all);
+
+  if (closed.length < 1 || !live) {
+    return { status: "insufficient_data" };
+  }
+
+  const previousWeek = closed.at(-1);
+  const currentWeek = live;
+
+  const previousHigh = finite(previousWeek.high);
+  const previousLow = finite(previousWeek.low);
+  const previousOpen = finite(previousWeek.open);
+  const previousClose = finite(previousWeek.close);
+
+  const currentHigh = finite(currentWeek.high);
+  const currentLow = finite(currentWeek.low);
+  const currentClose = finite(currentWeek.close);
+
+  if (
+    previousHigh === null ||
+    previousLow === null ||
+    previousOpen === null ||
+    previousClose === null ||
+    currentHigh === null ||
+    currentLow === null ||
+    currentClose === null
+  ) {
+    return { status: "invalid_data" };
+  }
+
+  const previousMid = (previousHigh + previousLow) / 2;
+
+  const sweptHigh = currentHigh > previousHigh;
+  const sweptLow = currentLow < previousLow;
+
+  const reclaimedAboveHigh = currentClose > previousHigh;
+  const reclaimedBelowLow = currentClose < previousLow;
+
+  const insideRange =
+    currentClose < previousHigh &&
+    currentClose > previousLow;
+
+  let condition = "inside_previous_range";
+
+  if (sweptHigh && reclaimedAboveHigh) {
+    condition = "high_expansion";
+  } else if (sweptLow && reclaimedBelowLow) {
+    condition = "low_expansion";
+  } else if (sweptHigh && insideRange) {
+    condition = "high_sweep_rejection";
+  } else if (sweptLow && insideRange) {
+    condition = "low_sweep_rejection";
+  }
+
+  let position = "equilibrium";
+
+  if (currentClose > previousMid) {
+    position = "above_equilibrium";
+  } else if (currentClose < previousMid) {
+    position = "below_equilibrium";
+  }
+
+  return {
+    status: "active",
+
+    previousWeek: {
+      high: previousHigh,
+      low: previousLow,
+      open: previousOpen,
+      close: previousClose,
+      midpoint: previousMid
+    },
+
+    currentWeek: {
+      high: currentHigh,
+      low: currentLow,
+      close: currentClose,
+      isLive: true
+    },
+
+    sweptPreviousHigh: sweptHigh,
+    sweptPreviousLow: sweptLow,
+    reclaimedPreviousHigh: reclaimedAboveHigh,
+    reclaimedPreviousLow: reclaimedBelowLow,
+    insidePreviousRange: insideRange,
+
+    position,
+    condition
+  };
+}
+
+
+function analyzeWeeklyContext(candles) {
+  const all = Array.isArray(candles) ? candles : [];
+  const closed = getClosedCandles(all);
+  const live = getLiveCandle(all);
+
+  if (closed.length < 1) {
+    return { status: "insufficient_data" };
+  }
+
+  const previousWeek = closed.at(-2) || closed.at(-1);
+  const currentWeek = live || closed.at(-1);
+
+  const previousHigh = finite(previousWeek.high);
+  const previousLow = finite(previousWeek.low);
+  const previousMid = (previousHigh + previousLow) / 2;
+
+  const currentOpen = finite(currentWeek.open);
+  const currentHigh = finite(currentWeek.high);
+  const currentLow = finite(currentWeek.low);
+  const currentClose = finite(currentWeek.close);
+
+  if (
+    previousHigh === null ||
+    previousLow === null ||
+    currentOpen === null ||
+    currentHigh === null ||
+    currentLow === null ||
+    currentClose === null
+  ) {
+    return { status: "invalid_data" };
+  }
+
+  const aboveOpen = currentClose > currentOpen;
+  const belowOpen = currentClose < currentOpen;
+
+  const sweptHigh = currentHigh > previousHigh;
+  const sweptLow = currentLow < previousLow;
+
+  const aboveMid = currentClose > previousMid;
+  const belowMid = currentClose < previousMid;
+
+  const closedAboveHigh = currentClose > previousHigh;
+  const closedBelowLow = currentClose < previousLow;
+
+  let direction = "neutral";
+  let condition = "inside_previous_range";
+
+  if (closedAboveHigh) {
+    direction = "bullish";
+    condition = "bullish_breakout";
+  } else if (closedBelowLow) {
+    direction = "bearish";
+    condition = "bearish_breakdown";
+  } else if (sweptHigh && aboveOpen) {
+    direction = "bullish";
+    condition = "high_sweep_bullish";
+  } else if (sweptLow && belowOpen) {
+    direction = "bearish";
+    condition = "low_sweep_bearish";
+  } else if (aboveOpen && aboveMid) {
+    direction = "bullish";
+    condition = "bullish_development";
+  } else if (belowOpen && belowMid) {
+    direction = "bearish";
+    condition = "bearish_development";
+  } else if (aboveOpen) {
+    direction = "bullish";
+    condition = "above_weekly_open";
+  } else if (belowOpen) {
+    direction = "bearish";
+    condition = "below_weekly_open";
+  }
+
+  return {
+    status: live ? "active" : "closed",
+    direction,
+    condition,
+
+    previousWeek: {
+      high: previousHigh,
+      low: previousLow,
+      midpoint: previousMid
+    },
+
+    currentWeek: {
+      open: currentOpen,
+      high: currentHigh,
+      low: currentLow,
+      close: currentClose
+    },
+
+    sweptPreviousHigh: sweptHigh,
+    sweptPreviousLow: sweptLow,
+
+    closedAbovePreviousHigh: closedAboveHigh,
+    closedBelowPreviousLow: closedBelowLow,
+
+    aboveWeeklyOpen: aboveOpen,
+    belowWeeklyOpen: belowOpen,
+
+    abovePreviousMidpoint: aboveMid,
+    belowPreviousMidpoint: belowMid
+  };
+}
+
 function analyzeTimeframe(
   candles
 ) {
@@ -491,7 +692,13 @@ function analyzeTimeframe(
   const lastClosed =
     closedCandles.at(-1) || null;
 
+  const weeklyCRT =
+    analyzeWeeklyCRT(allCandles);
+
+  const weeklyContext = analyzeWeeklyContext(allCandles);
+
   return {
+    weeklyContext,
     candles:
       allCandles.length,
 
@@ -512,8 +719,11 @@ function analyzeTimeframe(
 
     lastClosedCandle:
       lastClosed,
+    weeklyCRT:
+      analyzeWeeklyCRT(allCandles),
 
     liveCandle,
+    weeklyCRT,
 
     rangeHigh:
       highest(
@@ -553,10 +763,12 @@ function buildMarketAnalysis({
       timeframes || {}
     )
   ) {
-    analysis[timeframe] =
+    const analyzedTimeframe =
       analyzeTimeframe(
         candles?.candles ?? candles
       );
+
+    analysis[timeframe] = analyzedTimeframe;
   }
 
   return {

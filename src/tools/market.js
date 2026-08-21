@@ -20,7 +20,8 @@ function sleep(ms) {
 }
 
 async function requestJson(path, attempt = 1) {
-  const maxAttempts = 4;
+  const maxAttempts = 5;
+  const timeoutMs = 25000;
 
   return new Promise((resolve, reject) => {
     const req = https.get(
@@ -28,29 +29,7 @@ async function requestJson(path, attempt = 1) {
       {
         headers: {
           "User-Agent": "Nart-Jnr/1.0",
-          "Accept": "application/json",
-          "Connection": "close"
-        },
-        agent: new https.Agent({
-          keepAlive: false
-        }),
-        lookup: (hostname, options, callback) => {
-          dns.resolve4(hostname, (err, addresses) => {
-            if (err) {
-              callback(err);
-              return;
-            }
-        
-            if (options?.all) {
-              callback(null, addresses.map(address => ({
-                address,
-                family: 4
-              })));
-              return;
-            }
-        
-            callback(null, addresses[0], 4);
-          });
+          "Accept": "application/json"
         }
       },
       res => {
@@ -61,25 +40,21 @@ async function requestJson(path, attempt = 1) {
         });
 
         res.on("end", async () => {
-          if (
-            res.statusCode < 200 ||
-            res.statusCode >= 300
-          ) {
-            const error =
-              new Error(
-                `Bybit HTTP ${res.statusCode}: ${data}`
-              );
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            const error = new Error(
+              `Bybit HTTP ${res.statusCode}: ${data}`
+            );
 
             if (attempt < maxAttempts) {
-              await sleep(attempt * 1000);
+              const delay = attempt * 1000;
+              console.log(
+                `⚠️ Bybit HTTP ${res.statusCode}. Retrying in ${delay}ms...`
+              );
+
+              await sleep(delay);
 
               try {
-                resolve(
-                  await requestJson(
-                    path,
-                    attempt + 1
-                  )
-                );
+                resolve(await requestJson(path, attempt + 1));
               } catch (retryError) {
                 reject(retryError);
               }
@@ -105,20 +80,16 @@ async function requestJson(path, attempt = 1) {
 
             resolve(json.result);
           } catch {
-            reject(
-              new Error(
-                "Invalid JSON returned by Bybit."
-              )
-            );
+            reject(new Error("Invalid JSON returned by Bybit."));
           }
         });
       }
     );
 
-    req.setTimeout(15000, () => {
-      req.destroy(
-        new Error("Bybit request timed out.")
-      );
+    req.setTimeout(timeoutMs, () => {
+      const error = new Error("Bybit request timed out.");
+      error.code = "ETIMEDOUT";
+      req.destroy(error);
     });
 
     req.on("error", async error => {
@@ -131,26 +102,17 @@ async function requestJson(path, attempt = 1) {
         ].includes(error.code) ||
         error.message?.includes("timed out");
 
-      if (
-        retryable &&
-        attempt < maxAttempts
-      ) {
+      if (retryable && attempt < maxAttempts) {
         const delay = attempt * 1000;
 
         console.log(
-          `⚠️ Bybit connection failed (${error.code || error.message}). ` +
-          `Retrying in ${delay}ms...`
+          `⚠️ Bybit connection failed (${error.code || error.message}). Retrying in ${delay}ms...`
         );
 
         await sleep(delay);
 
         try {
-          resolve(
-            await requestJson(
-              path,
-              attempt + 1
-            )
-          );
+          resolve(await requestJson(path, attempt + 1));
         } catch (retryError) {
           reject(retryError);
         }

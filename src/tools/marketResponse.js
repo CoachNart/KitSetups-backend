@@ -41,8 +41,10 @@ function formatMarketAnalysis(result) {
 
   const trends = alignment.trends || {};
 
-  const htf = [
-    ["1W", trends["1w"]],
+  const weeklyLive = result.structures?.["1w"]?.weeklyContext?.direction;
+
+const htf = [
+    ["1W", weeklyLive || trends["1w"]],
     ["1D", trends["1d"]],
     ["4H", trends["4h"]],
     ["1H", trends["1h"]]

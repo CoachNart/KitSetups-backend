@@ -29,6 +29,7 @@ function count(
 
 function analyzeAlignment(structures = {}) {
   const timeframes = [
+    "1w",
     "1d",
     "4h",
     "1h",
@@ -43,6 +44,10 @@ function analyzeAlignment(structures = {}) {
     ])
   );
 
+  const weeklyContext =
+    structures?.["1w"]?.weeklyContext?.direction || "neutral";
+
+  const weekly = trends["1w"];
   const macro = trends["1d"];
   const primary = trends["4h"];
   const setup = trends["1h"];
@@ -90,6 +95,22 @@ function analyzeAlignment(structures = {}) {
   ].filter(t => t === "bearish").length;
 
   const reasons = [];
+
+  if (weekly === "bullish") {
+    reasons.push("1W structure is bullish");
+  }
+
+  if (weekly === "bearish") {
+    reasons.push("1W structure is bearish");
+  }
+
+  if (weeklyContext === "bullish") {
+    reasons.push("Weekly context is bullish");
+  }
+
+  if (weeklyContext === "bearish") {
+    reasons.push("Weekly context is bearish");
+  }
 
   if (macro === "bullish") {
     reasons.push("1D structure is bullish");
@@ -164,7 +185,10 @@ function analyzeAlignment(structures = {}) {
   return {
     trends,
 
+    weeklyContext,
+
     macro: {
+      weekly,
       daily: macro,
       bullishCount,
       bearishCount
