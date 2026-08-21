@@ -1064,6 +1064,9 @@ async function handleRequest(req, res) {
 
   /*
    * SIGNAL FEED
+   *
+   * Generate live analysis directly from the market engine.
+   * This keeps all existing signal/entry criteria intact.
    */
 
   if (
@@ -1071,42 +1074,34 @@ async function handleRequest(req, res) {
     url.startsWith("/api/signals")
   ) {
     try {
-      const signalsFile = path.join(
-        __dirname,
-        "data",
-        "signals.json"
+      const symbol =
+        query.symbol || "BTCUSDT";
+
+      console.log(
+        `📡 Live signal request: ${symbol}`
       );
 
-      if (!fs.existsSync(signalsFile)) {
-        return sendJson(res, 200, {
-          ok: true,
-          data: {
-            signals: []
-          }
-        });
-      }
-
-      const store = JSON.parse(
-        fs.readFileSync(
-          signalsFile,
-          "utf8"
-        )
-      );
+      const result =
+        await marketEngine.analyzeMarket(symbol);
 
       return sendJson(res, 200, {
         ok: true,
-        data: store
+        data: {
+          signals: [
+            result
+          ]
+        }
       });
 
     } catch (error) {
       console.error(
-        "❌ Signal feed error:",
-        error.message
+        "❌ Live signal feed error:",
+        error.stack || error.message
       );
 
       return sendJson(res, 500, {
         ok: false,
-        error: "Unable to load signals"
+        error: error.message
       });
     }
   }
