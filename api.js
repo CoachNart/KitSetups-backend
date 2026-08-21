@@ -5,7 +5,7 @@ const { ethers } = require("ethers");
 const crypto = require("crypto");
 const marketEngine = require("./src/tools/marketEngine");
 
-const PORT = Number(process.env.API_PORT || 8787);
+const PORT = Number(process.env.PORT || process.env.API_PORT || 8787);
 
 const BNB_RPC =
   process.env.BNB_RPC_URL ||
