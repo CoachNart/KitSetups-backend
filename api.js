@@ -175,7 +175,7 @@ function getAuthenticatedUserId(req) {
 function setSessionCookie(res, token) {
   res.setHeader(
     "Set-Cookie",
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_MAX_AGE / 1000)}; SameSite=Lax`
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_MAX_AGE / 1000)}; SameSite=None; Secure`
   );
 }
 
@@ -226,16 +226,26 @@ const PLANS = {
   },
 };
 
-function sendJson(res, status, data) {
+function sendJson(res, status, data, req = null) {
   const body = JSON.stringify(data);
+
+  const origin =
+    req?.headers?.origin || "";
+
+  const allowedOrigin =
+    origin === "https://nart-jnr-ui.vercel.app"
+      ? origin
+      : "https://nart-jnr-ui.vercel.app";
 
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods":
       "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
       "Content-Type",
+    "Vary": "Origin",
   });
 
   res.end(body);
