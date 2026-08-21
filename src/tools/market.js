@@ -1,4 +1,5 @@
 const https = require("https");
+const dns = require("dns");
 const { analyzeTimeframe } = require("./analysis");
 
 const BASE_URL = "https://api.bybit.com";
@@ -32,7 +33,25 @@ async function requestJson(path, attempt = 1) {
         },
         agent: new https.Agent({
           keepAlive: false
-        })
+        }),
+        lookup: (hostname, options, callback) => {
+          dns.resolve4(hostname, (err, addresses) => {
+            if (err) {
+              callback(err);
+              return;
+            }
+        
+            if (options?.all) {
+              callback(null, addresses.map(address => ({
+                address,
+                family: 4
+              })));
+              return;
+            }
+        
+            callback(null, addresses[0], 4);
+          });
+        }
       },
       res => {
         let data = "";
@@ -151,6 +170,21 @@ async function getServerTime() {
   return Number(result.timeNano)
     ? Math.floor(Number(result.timeNano) / 1e6)
     : Number(result.timeSecond) * 1000;
+}
+
+async function getAllPairs() {
+  const result = await requestJson(
+    "/v5/market/instruments-info?category=linear&limit=1000"
+  );
+
+  return (result.list || [])
+    .filter(
+      x =>
+        x.status === "Trading" &&
+        x.quoteCoin === "USDT" &&
+        x.contractType === "LinearPerpetual"
+    )
+    .map(x => x.symbol);
 }
 
 async function getTicker(
@@ -376,6 +410,7 @@ async function getMarketSnapshot(
 }
 
 module.exports = {
+  getAllPairs,
   getTicker,
   getCandles,
   getMultiTimeframe,

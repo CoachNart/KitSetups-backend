@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const marketEngine = require("./src/tools/marketEngine");
+const market = require("./src/tools/market");
 const whatsapp = require("./src/whatsapp");
 const access = require("./src/core/access");
 
@@ -37,24 +38,7 @@ function setWhatsAppSocket(sock) {
 }
 
 async function getAllPairs() {
-  const url =
-    "https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000";
-
-  const res = await fetch(url);
-  const data = await res.json();
-
-  if (data.retCode !== 0) {
-    throw new Error(data.retMsg || "Failed to fetch pairs");
-  }
-
-  return data.result.list
-    .filter(
-      x =>
-        x.status === "Trading" &&
-        x.quoteCoin === "USDT" &&
-        x.contractType === "LinearPerpetual"
-    )
-    .map(x => x.symbol);
+  return market.getAllPairs();
 }
 
 function setupKey(symbol, execution) {
