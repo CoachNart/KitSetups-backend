@@ -2,7 +2,7 @@ const https = require("https");
 const dns = require("dns");
 const { analyzeTimeframe } = require("./analysis");
 
-const BASE_URL = "https://api.bybit.com";
+const BASE_URL = "https://api.bytick.com";
 
 const INTERVAL_MS = {
   "1": 60_000,
