@@ -1316,51 +1316,41 @@ async function handleRequest(req, res) {
     url.startsWith("/api/signals")
   ) {
     try {
-      const symbol =
-        query.symbol || "BTCUSDT";
-
-      console.log(
-        `📡 Live signal request: ${symbol}`
+      const signalsFile = path.join(
+        __dirname,
+        "data",
+        "signals.json"
       );
 
-      const result =
-        await marketEngine.analyzeMarket(symbol);
+      let signals = [];
 
-      const signalTradePlan = result?.tradePlan;
-      const signalExecution = signalTradePlan?.execution;
+      if (fs.existsSync(signalsFile)) {
+        const store = JSON.parse(
+          fs.readFileSync(signalsFile, "utf8")
+        );
 
-      const confirmed =
-        signalExecution?.status === "ENTRY_CONFIRMED" ||
-        signalTradePlan?.status === "ENTRY_CONFIRMED";
-
-      if (!confirmed) {
-        return sendJson(res, 200, {
-          ok: true,
-          data: {
-            signals: []
-          }
-        });
+        if (Array.isArray(store.signals)) {
+          signals = store.signals;
+        }
       }
 
       return sendJson(res, 200, {
         ok: true,
         data: {
-          signals: [
-            result
-          ]
+          signals
         }
-      });
+      }, req);
 
     } catch (error) {
       console.error(
-        "❌ Live signal feed error:",
+        "❌ Signal feed error:",
         error.stack || error.message
       );
 
       return sendJson(res, 500, {
         ok: false,
         error: error.message
-      });
+      }, req);
     }
   }
 
