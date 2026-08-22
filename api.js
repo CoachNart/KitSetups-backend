@@ -1084,6 +1084,22 @@ async function handleRequest(req, res) {
       const result =
         await marketEngine.analyzeMarket(symbol);
 
+      const signalTradePlan = result?.tradePlan;
+      const signalExecution = signalTradePlan?.execution;
+
+      const confirmed =
+        signalExecution?.status === "ENTRY_CONFIRMED" ||
+        signalTradePlan?.status === "ENTRY_CONFIRMED";
+
+      if (!confirmed) {
+        return sendJson(res, 200, {
+          ok: true,
+          data: {
+            signals: []
+          }
+        });
+      }
+
       return sendJson(res, 200, {
         ok: true,
         data: {
