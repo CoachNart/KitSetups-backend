@@ -5,6 +5,20 @@ const path = require("path");
 const { ethers } = require("ethers");
 const crypto = require("crypto");
 const marketEngine = require("./src/tools/marketEngine");
+const { getApps, initializeApp, cert } = require("firebase-admin/app");
+const { getAuth } = require("firebase-admin/auth");
+
+if (getApps().length === 0) {
+  initializeApp({
+    credential: cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    }),
+  });
+}
+
+const firebaseAuth = getAuth();
 
 const PORT = Number(process.env.PORT || process.env.API_PORT || 8787);
 
@@ -141,6 +155,33 @@ function getCookie(req, name) {
   }
 
   return null;
+}
+
+async function getFirebaseUserId(req) {
+  try {
+    const authHeader = req.headers.authorization || "";
+
+    if (!authHeader.startsWith("Bearer ")) {
+      return null;
+    }
+
+    const idToken = authHeader.slice(7).trim();
+
+    if (!idToken) {
+      return null;
+    }
+
+    const decodedToken = await firebaseAuth.verifyIdToken(idToken);
+
+    return decodedToken.uid || null;
+  } catch (error) {
+    console.error(
+      "❌ Firebase token verification failed:",
+      error.message
+    );
+
+    return null;
+  }
 }
 
 function getAuthenticatedUserId(req) {
@@ -1316,7 +1357,7 @@ async function handleRequest(req, res) {
     url.startsWith("/api/signals")
   ) {
     try {
-      const userId = getAuthenticatedUserId(req);
+      const userId = await getFirebaseUserId(req);
 
       if (!userId) {
         return sendJson(res, 401, {
