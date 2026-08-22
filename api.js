@@ -5,13 +5,24 @@ const path = require("path");
 const { ethers } = require("ethers");
 const crypto = require("crypto");
 const marketEngine = require("./src/tools/marketEngine");
+const market = require("./src/tools/market");
 const { getApps, initializeApp, cert } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
+const { getFirestore } = require("firebase-admin/firestore");
 
 if (getApps().length === 0) {
+  const encodedServiceAccount =
+    process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+
+  if (!encodedServiceAccount) {
+    throw new Error(
+      "FIREBASE_SERVICE_ACCOUNT_BASE64 is not configured"
+    );
+  }
+
   const serviceAccount = JSON.parse(
     Buffer.from(
-      process.env.FIREBASE_SERVICE_ACCOUNT_BASE64,
+      encodedServiceAccount,
       "base64"
     ).toString("utf8")
   );
@@ -22,6 +33,127 @@ if (getApps().length === 0) {
 }
 
 const firebaseAuth = getAuth();
+const db = getFirestore();
+
+
+const SIGNALS_COLLECTION = "signals";
+const SIGNALS_DOCUMENT = "latest";
+
+async function saveSignalsToFirestore(signals) {
+  await db
+    .collection(SIGNALS_COLLECTION)
+    .doc(SIGNALS_DOCUMENT)
+    .set({
+      signals,
+      updatedAt: new Date().toISOString(),
+    });
+
+  console.log(
+    `📡 Saved ${signals.length} signals to Firestore`
+  );
+}
+
+async function runSignalScanner() {
+  console.log("🔎 Discovering Bybit USDT perpetual pairs...");
+
+  const symbols = await market.getAllPairs();
+
+  console.log(
+    `📊 Bybit returned ${symbols.length} active USDT perpetual pairs`
+  );
+
+  const signals = [];
+  const concurrency = 5;
+
+  async function scanSymbol(symbol) {
+    try {
+      console.log(`🔎 Scanner analyzing ${symbol}...`);
+
+      const result =
+        await marketEngine.analyzeMarket(symbol);
+
+      const plan = result?.tradePlan;
+
+      if (plan?.status === "SETUP") {
+        signals.push(result);
+
+        console.log(
+          `🎯 SETUP FOUND: ${symbol} ${plan.direction} | RR ${plan.riskReward ?? "N/A"}`
+        );
+      } else {
+        console.log(
+          `⏭️ ${symbol}: ${plan?.status || "NO_PLAN"}`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `❌ Scanner failed for ${symbol}:`,
+        error.message
+      );
+    }
+  }
+
+  for (let i = 0; i < symbols.length; i += concurrency) {
+    const batch = symbols.slice(i, i + concurrency);
+
+    console.log(
+      `📡 Scanner batch ${Math.floor(i / concurrency) + 1}/${Math.ceil(symbols.length / concurrency)}`
+    );
+
+    await Promise.all(
+      batch.map(scanSymbol)
+    );
+  }
+
+  signals.sort(
+    (a, b) =>
+      new Date(b.generatedAt).getTime() -
+      new Date(a.generatedAt).getTime()
+  );
+
+  await saveSignalsToFirestore(signals);
+
+  console.log(
+    `📡 Scanner finished: ${signals.length} SETUP signals from ${symbols.length} pairs`
+  );
+}
+
+let scannerRunning = false;
+
+function startSignalScanner() {
+  console.log(
+    "🚀 Starting Firestore Bybit signal scanner..."
+  );
+
+  async function run() {
+    if (scannerRunning) {
+      console.log(
+        "⏳ Previous scanner cycle is still running. Skipping this cycle."
+      );
+      return;
+    }
+
+    scannerRunning = true;
+
+    try {
+      await runSignalScanner();
+    } catch (error) {
+      console.error(
+        "❌ Scanner cycle failed:",
+        error.stack || error.message
+      );
+    } finally {
+      scannerRunning = false;
+    }
+  }
+
+  run();
+
+  setInterval(
+    run,
+    5 * 60 * 1000
+  );
+}
 
 const PORT = Number(process.env.PORT || process.env.API_PORT || 8787);
 
@@ -1376,21 +1508,18 @@ async function handleRequest(req, res) {
 
       const user = getUser(userId);
 
-      const signalsFile = path.join(
-        __dirname,
-        "data",
-        "signals.json"
-      );
+      const signalDoc = await db
+        .collection(SIGNALS_COLLECTION)
+        .doc(SIGNALS_DOCUMENT)
+        .get();
 
       let signals = [];
 
-      if (fs.existsSync(signalsFile)) {
-        const store = JSON.parse(
-          fs.readFileSync(signalsFile, "utf8")
-        );
+      if (signalDoc.exists) {
+        const storedData = signalDoc.data();
 
-        if (Array.isArray(store.signals)) {
-          signals = store.signals;
+        if (Array.isArray(storedData?.signals)) {
+          signals = storedData.signals;
         }
       }
 
@@ -1435,6 +1564,8 @@ async function handleRequest(req, res) {
 
 const server =
   http.createServer(handleRequest);
+
+startSignalScanner();
 
 server.listen(
   PORT,
