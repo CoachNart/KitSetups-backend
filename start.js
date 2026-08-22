@@ -1,22 +1,22 @@
 const { spawn } = require("child_process");
 
-console.log("🚀 Starting Nart Jnr API + WhatsApp...");
+console.log("🚀 Starting Nart Jnr API + Trade Scanner...");
 
-const api = spawn(process.execPath, ["api.js"], {
-  stdio: "inherit"
-});
-
-const whatsapp = spawn(
+const api = spawn(
   process.execPath,
-  ["src/whatsapp/index.js"],
-  {
-    stdio: "inherit"
-  }
+  ["api.js"],
+  { stdio: "inherit" }
+);
+
+const scanner = spawn(
+  process.execPath,
+  ["scanner.js"],
+  { stdio: "inherit" }
 );
 
 function shutdown() {
   api.kill("SIGTERM");
-  whatsapp.kill("SIGTERM");
+  scanner.kill("SIGTERM");
   process.exit(0);
 }
 
@@ -28,7 +28,7 @@ api.on("exit", code => {
   process.exit(code ?? 1);
 });
 
-whatsapp.on("exit", code => {
-  console.log(`❌ WhatsApp exited with code ${code}`);
+scanner.on("exit", code => {
+  console.log(`❌ Scanner exited with code ${code}`);
   process.exit(code ?? 1);
 });
