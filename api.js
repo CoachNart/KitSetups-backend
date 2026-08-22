@@ -17,7 +17,7 @@ const PAYMENT_ADDRESS =
   "0x1c35bf9d920e1b5d7e7e37ce1d15a1b9500f8474";
 
 const PREMIUM_PRICE_USDT =
-  Number(process.env.NART_PREMIUM_PRICE_USDT || 55);
+  Number(process.env.NART_PREMIUM_PRICE_USDT || 30);
 
 const BNB_CHAIN_ID = 56;
 
@@ -218,12 +218,12 @@ function readBody(req) {
 const PLANS = {
   free: {
     name: "FREE",
-    monthlyLimit: 3,
+    monthlyLimit: 5,
   },
 
   premium: {
     name: "PREMIUM",
-    monthlyLimit: 100,
+    monthlyLimit: Infinity,
   },
 };
 
@@ -1316,6 +1316,17 @@ async function handleRequest(req, res) {
     url.startsWith("/api/signals")
   ) {
     try {
+      const userId = getAuthenticatedUserId(req);
+
+      if (!userId) {
+        return sendJson(res, 401, {
+          ok: false,
+          error: "Authentication required"
+        }, req);
+      }
+
+      const user = getUser(userId);
+
       const signalsFile = path.join(
         __dirname,
         "data",
@@ -1334,10 +1345,19 @@ async function handleRequest(req, res) {
         }
       }
 
+      const isPremium = user.plan === "premium";
+
+      const visibleSignals = isPremium
+        ? signals
+        : signals.slice(0, 5);
+
       return sendJson(res, 200, {
         ok: true,
         data: {
-          signals
+          signals: visibleSignals,
+          plan: isPremium ? "premium" : "free",
+          unlimited: isPremium,
+          signalLimit: isPremium ? null : 5
         }
       }, req);
 
@@ -1354,7 +1374,7 @@ async function handleRequest(req, res) {
     }
   }
 
-  /*
+/*
    * UNKNOWN ROUTE
    */
 
