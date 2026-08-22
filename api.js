@@ -9,12 +9,15 @@ const { getApps, initializeApp, cert } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 
 if (getApps().length === 0) {
+  const serviceAccount = JSON.parse(
+    Buffer.from(
+      process.env.FIREBASE_SERVICE_ACCOUNT_BASE64,
+      "base64"
+    ).toString("utf8")
+  );
+
   initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-    }),
+    credential: cert(serviceAccount),
   });
 }
 
@@ -973,14 +976,19 @@ async function handleRequest(req, res) {
         id: user.id,
         plan: user.plan,
         planName: plan.name,
-        monthlyLimit: plan.monthlyLimit,
+        monthlyLimit:
+          plan.monthlyLimit === Infinity
+            ? null
+            : plan.monthlyLimit,
         monthlyUsage: user.monthlyUsage,
         remaining:
-          Math.max(
-            plan.monthlyLimit -
-              user.monthlyUsage,
-            0
-          ),
+          plan.monthlyLimit === Infinity
+            ? null
+            : Math.max(
+                plan.monthlyLimit -
+                  user.monthlyUsage,
+                0
+              ),
         usageMonth:
           user.usageMonth,
       },
