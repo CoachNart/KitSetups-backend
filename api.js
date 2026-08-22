@@ -1,3 +1,4 @@
+require("dotenv").config();
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -354,9 +355,248 @@ function getUserId(req, query) {
 }
 
 
+
+function getGoogleRedirectUri() {
+  return (
+    process.env.GOOGLE_REDIRECT_URI ||
+    "http://127.0.0.1:8787/api/auth/google/callback"
+  );
+}
+
+function getGoogleClientId() {
+  return process.env.GOOGLE_CLIENT_ID || "";
+}
+
+function getGoogleClientSecret() {
+  return process.env.GOOGLE_CLIENT_SECRET || "";
+}
+
+function getUiUrl() {
+  return (
+    process.env.NART_UI_URL ||
+    "http://127.0.0.1:3000"
+  );
+}
+
 async function handleRequest(req, res) {
   const url = req.url || "/";
   const query = getQuery(url);
+
+
+  /*
+   * GOOGLE AUTHENTICATION
+   */
+
+  if (
+    req.method === "GET" &&
+    url.startsWith("/api/auth/google")
+  ) {
+    const clientId = getGoogleClientId();
+    const redirectUri = getGoogleRedirectUri();
+
+    if (!clientId) {
+      return sendJson(res, 500, {
+        ok: false,
+        error: "Google OAuth is not configured",
+      });
+    }
+
+    const state = crypto.randomBytes(24).toString("hex");
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "openid email profile",
+      access_type: "online",
+      state,
+    });
+
+    res.statusCode = 302;
+    res.setHeader(
+      "Location",
+      `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+    );
+    res.end();
+    return;
+  }
+
+  if (
+    req.method === "GET" &&
+    url.startsWith("/api/auth/google/callback")
+  ) {
+    try {
+      const code = query.code;
+      const error = query.error;
+
+      if (error) {
+        res.statusCode = 302;
+        res.setHeader(
+          "Location",
+          `${getUiUrl()}?auth=google_error`
+        );
+        res.end();
+        return;
+      }
+
+      if (!code) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "Google authorization code missing",
+        });
+      }
+
+      const clientId = getGoogleClientId();
+      const clientSecret = getGoogleClientSecret();
+      const redirectUri = getGoogleRedirectUri();
+
+      if (!clientId || !clientSecret) {
+        return sendJson(res, 500, {
+          ok: false,
+          error: "Google OAuth credentials are missing",
+        });
+      }
+
+      const tokenResponse = await fetch(
+        "https://oauth2.googleapis.com/token",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            code,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: redirectUri,
+            grant_type: "authorization_code",
+          }),
+        }
+      );
+
+      const tokenData =
+        await tokenResponse.json();
+
+      if (
+        !tokenResponse.ok ||
+        !tokenData.access_token
+      ) {
+        console.error(
+          "❌ Google token exchange failed:",
+          tokenData
+        );
+
+        return sendJson(res, 401, {
+          ok: false,
+          error: "Google authentication failed",
+        });
+      }
+
+      const profileResponse = await fetch(
+        "https://openidconnect.googleapis.com/v1/userinfo",
+        {
+          headers: {
+            Authorization:
+              `Bearer ${tokenData.access_token}`,
+          },
+        }
+      );
+
+      const profile =
+        await profileResponse.json();
+
+      if (
+        !profileResponse.ok ||
+        !profile.sub ||
+        !profile.email
+      ) {
+        return sendJson(res, 401, {
+          ok: false,
+          error: "Unable to read Google profile",
+        });
+      }
+
+      const auth = readAuthStore();
+
+      let user = Object.values(auth.users).find(
+        item =>
+          item.googleId === profile.sub ||
+          item.email ===
+            String(profile.email)
+              .trim()
+              .toLowerCase()
+      );
+
+      if (!user) {
+        const userId =
+          "user_" + crypto.randomUUID();
+
+        user = {
+          id: userId,
+          email:
+            String(profile.email)
+              .trim()
+              .toLowerCase(),
+          displayName:
+            profile.name || null,
+          photoURL:
+            profile.picture || null,
+          googleId: profile.sub,
+          createdAt:
+            new Date().toISOString(),
+        };
+
+        auth.users[userId] = user;
+      } else {
+        user.displayName =
+          profile.name ||
+          user.displayName ||
+          null;
+
+        user.photoURL =
+          profile.picture ||
+          user.photoURL ||
+          null;
+
+        user.googleId =
+          profile.sub ||
+          user.googleId ||
+          null;
+      }
+
+      writeAuthStore(auth);
+
+      getUser(user.id);
+
+      const token =
+        createSession(user.id);
+
+      setSessionCookie(res, token);
+
+      res.statusCode = 302;
+      res.setHeader(
+        "Location",
+        `${getUiUrl()}?auth=google_success`
+      );
+      res.end();
+      return;
+
+    } catch (error) {
+      console.error(
+        "❌ Google authentication error:",
+        error.stack || error.message
+      );
+
+      res.statusCode = 302;
+      res.setHeader(
+        "Location",
+        `${getUiUrl()}?auth=google_error`
+      );
+      res.end();
+      return;
+    }
+  }
 
 
   /*
@@ -535,7 +775,7 @@ async function handleRequest(req, res) {
       return sendJson(res, 401, {
         ok: false,
         error: "Not authenticated",
-      });
+      }, req);
     }
 
     const auth =
@@ -548,7 +788,7 @@ async function handleRequest(req, res) {
       return sendJson(res, 401, {
         ok: false,
         error: "Account not found",
-      });
+      }, req);
     }
 
     return sendJson(res, 200, {
@@ -556,8 +796,10 @@ async function handleRequest(req, res) {
       data: {
         id: user.id,
         email: user.email,
+        displayName: user.displayName || null,
+        photoURL: user.photoURL || null,
       },
-    });
+    }, req);
   }
 
   if (
