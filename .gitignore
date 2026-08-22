@@ -36,3 +36,6 @@ src/tools/market.js.before-dns-fix
 
 firebase-admin.js
 firebase-key.b64
+
+firebase-admin.js
+firebase-key.b64
