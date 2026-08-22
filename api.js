@@ -234,9 +234,9 @@ function sendJson(res, status, data, req = null) {
     req?.headers?.origin || "";
 
   const allowedOrigin =
-    origin === "https://nart-jnr-ui.vercel.app"
+    origin === "https://kitsetups.vercel.app"
       ? origin
-      : "https://nart-jnr-ui.vercel.app";
+      : "https://kitsetups.vercel.app";
 
   res.writeHead(status, {
     "Content-Type": "application/json",
@@ -834,9 +834,9 @@ async function handleRequest(req, res) {
       req.headers.origin || "";
 
     const allowedOrigin =
-      origin === "https://nart-jnr-ui.vercel.app"
+      origin === "https://kitsetups.vercel.app"
         ? origin
-        : "https://nart-jnr-ui.vercel.app";
+        : "https://kitsetups.vercel.app";
 
     res.writeHead(204, {
       "Access-Control-Allow-Origin":
