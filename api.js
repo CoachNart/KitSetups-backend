@@ -53,6 +53,57 @@ async function saveSignalsToFirestore(signals) {
   );
 }
 
+async function publishApprovedSignal(signal) {
+  if (signal?.tradePlan?.status !== "SETUP") {
+    return;
+  }
+
+  const symbol = signal.symbol;
+
+  if (!symbol) {
+    console.error(
+      "❌ Approved signal has no symbol. Skipping Firestore."
+    );
+    return;
+  }
+
+  const ref = db
+    .collection(SIGNALS_COLLECTION)
+    .doc(SIGNALS_DOCUMENT);
+
+  await db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(ref);
+
+    const existingSignals =
+      doc.exists && Array.isArray(doc.data()?.signals)
+        ? doc.data().signals
+        : [];
+
+    const index = existingSignals.findIndex(
+      item => item?.symbol === symbol
+    );
+
+    if (index >= 0) {
+      existingSignals[index] = signal;
+    } else {
+      existingSignals.push(signal);
+    }
+
+    transaction.set(
+      ref,
+      {
+        signals: existingSignals,
+        updatedAt: new Date().toISOString()
+      },
+      { merge: true }
+    );
+  });
+
+  console.log(
+    `💾 Published approved signal: ${symbol} ${signal.tradePlan.direction} | RR ${signal.tradePlan.riskReward ?? "N/A"}`
+  );
+}
+
 async function runSignalScanner() {
   console.log("🔎 Discovering Bybit USDT perpetual pairs...");
 
@@ -62,8 +113,8 @@ async function runSignalScanner() {
     `📊 Bybit returned ${symbols.length} active USDT perpetual pairs`
   );
 
-  const signals = [];
   const concurrency = 5;
+  let approvedCount = 0;
 
   async function scanSymbol(symbol) {
     try {
@@ -72,16 +123,20 @@ async function runSignalScanner() {
 
       const plan = result?.tradePlan;
 
-      // Only approved SETUP signals are collected.
+      // Only fully approved setups are published.
       if (plan?.status !== "SETUP") {
         return;
       }
 
-      signals.push(result);
+      approvedCount++;
 
       console.log(
         `🎯 APPROVED SETUP: ${symbol} ${plan.direction} | RR ${plan.riskReward ?? "N/A"}`
       );
+
+      // Publish immediately. Do not wait for the entire scan.
+      await publishApprovedSignal(result);
+
     } catch (error) {
       console.error(
         `❌ Scanner failed for ${symbol}:`,
@@ -108,28 +163,8 @@ async function runSignalScanner() {
     );
   }
 
-  signals.sort(
-    (a, b) =>
-      new Date(b.generatedAt).getTime() -
-      new Date(a.generatedAt).getTime()
-  );
-
-  // Only approved SETUP signals are allowed into Firestore.
-  // Never overwrite existing approved signals with an empty scan.
-  if (signals.length > 0) {
-    await saveSignalsToFirestore(signals);
-
-    console.log(
-      `✅ Firestore updated: ${signals.length} approved SETUP signals from ${symbols.length} pairs`
-    );
-  } else {
-    console.log(
-      `⚠️ Scan completed: 0 approved SETUP signals from ${symbols.length} pairs. Existing Firestore signals preserved.`
-    );
-  }
-
   console.log(
-    `🏁 Scanner finished: ${signals.length} approved signals / ${symbols.length} pairs`
+    `🏁 Scanner finished: ${approvedCount} approved signals / ${symbols.length} pairs`
   );
 }
 
