@@ -97,13 +97,13 @@ async function main() {
   );
 
   console.log(
-    `\nNart Jnr: ${answer}`
+    `\nKitSetups: ${answer}`
   );
 }
 
 main().catch(error => {
   console.error(
-    "Nart Jnr error:",
+    "KitSetups error:",
     error.message
   );
 });

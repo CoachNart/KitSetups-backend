@@ -18,7 +18,7 @@ module.exports = {
 
   assistantName:
     process.env.ASSISTANT_NAME ||
-    "Nart Jnr",
+    "KitSetups",
 
   maxHistory:
     Number(process.env.MAX_HISTORY || 16)

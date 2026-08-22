@@ -127,7 +127,7 @@ async function handleCommand({
         text:
           `✅ *ACCESS APPROVED*\n\n` +
           `User: ${quotedParticipant}\n\n` +
-          `They can now use Nart Jnr.`
+          `They can now use KitSetups.`
       },
       { quoted: msg }
     );
@@ -234,7 +234,7 @@ async function handleCommand({
       jid,
       {
         text:
-          `🔐 *NART JNR ACCESS*\n\n` +
+          `🔐 *KitSetups ACCESS*\n\n` +
           `*OWNER*\n${owners}\n\n` +
           `*APPROVED USERS*\n${approved}`
       },
@@ -309,7 +309,7 @@ async function handleCommand({
       jid,
       {
         text:
-`🤖 *NART JNR*
+`🤖 *KitSetups*
 
 Here's what I can do:
 
@@ -469,7 +469,7 @@ Members: ${metadata.participants.length}
 Admins: ${admins}
 Group ID: ${jid}
 
-🟢 Nart Jnr is active here.`
+🟢 KitSetups is active here.`
         },
         { quoted: msg }
       );
@@ -547,7 +547,7 @@ Members: ${members.length}
       }
 
       text +=
-        "🟢 Nart Jnr sees this group.";
+        "🟢 KitSetups sees this group.";
 
       await sock.sendMessage(
         jid,
@@ -726,7 +726,7 @@ Messages tracked: ${group.messages || 0}
       jid,
       {
         text:
-`⚙️ *NART JNR STATUS*
+`⚙️ *KitSetups STATUS*
 
 🟢 WhatsApp: Connected
 🧠 Process: Running

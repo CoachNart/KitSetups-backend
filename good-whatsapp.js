@@ -184,7 +184,7 @@ function loadMemory() {
     return {
       owner: {
         name: "Coach Nart",
-        preferredAssistantName: "Nart Jnr"
+        preferredAssistantName: "KitSetups"
       },
       facts: [],
       preferences: [],
@@ -282,9 +282,9 @@ function isAddressedToNart(text) {
     lower.startsWith("nart ") ||
     lower.startsWith("nart,") ||
     lower.startsWith("nart:") ||
-    lower.startsWith("nart jnr ") ||
-    lower.startsWith("nart jnr,") ||
-    lower.startsWith("nart jnr:") ||
+    lower.startsWith("kitsetups ") ||
+    lower.startsWith("kitsetups,") ||
+    lower.startsWith("kitsetups:") ||
     lower.startsWith("@nart ")
   );
 }
@@ -304,7 +304,7 @@ function buildSystemPrompt(
   jid
 ) {
   return `
-You are Nart Jnr, Coach Nart's personal AI assistant.
+You are KitSetups, Coach Nart's personal AI assistant.
 
 Your owner is Coach Nart.
 
@@ -345,7 +345,7 @@ ${JSON.stringify(memory, null, 2)}
 
 IMPORTANT:
 
-You are Nart Jnr, not Coach Nart.
+You are KitSetups, not Coach Nart.
 
 Never pretend to be Coach Nart.
 
@@ -395,7 +395,7 @@ async function start() {
       ) {
 
         console.log(
-          "\n🔥 Nart Jnr is connected to WhatsApp.\n"
+          "\n🔥 KitSetups is connected to WhatsApp.\n"
         );
       }
 

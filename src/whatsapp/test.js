@@ -34,7 +34,7 @@ async function start() {
       try {
         await sock.sendMessage(
           jid,
-          { text: "Nart Jnr received this. 🫡" },
+          { text: "KitSetups received this. 🫡" },
           { quoted: msg }
         );
 

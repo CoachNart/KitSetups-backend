@@ -28,7 +28,7 @@ async function requestJson(path, attempt = 1) {
       `${BASE_URL}${path}`,
       {
         headers: {
-          "User-Agent": "Nart-Jnr/1.0",
+          "User-Agent": "KitSetups/1.0",
           "Accept": "application/json"
         }
       },

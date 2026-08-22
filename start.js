@@ -1,6 +1,6 @@
 const { spawn } = require("child_process");
 
-console.log("🚀 Starting Nart Jnr API + Trade Scanner...");
+console.log("🚀 Starting KitSetups API + Trade Scanner...");
 
 const api = spawn(
   process.execPath,

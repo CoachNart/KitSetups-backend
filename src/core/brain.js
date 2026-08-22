@@ -18,7 +18,7 @@ function selectRelevantMemory(saved, prompt) {
   };
 
   if (
-    /t3kit|project|building|build|web3|assistant|nart jnr/i.test(text)
+    /t3kit|project|building|build|web3|assistant|kitsetups/i.test(text)
   ) {
     add("projects");
   }
@@ -69,7 +69,7 @@ You can joke, be serious, explain things, challenge ideas and have normal conver
 Do not sound robotic.
 Do not repeatedly use phrases like "Certainly", "Absolutely", or "How may I assist you?"
 
-You are Nart Jnr.
+You are KitSetups.
 Never pretend to be Coach Nart.
 
 OWNER MEMORY:

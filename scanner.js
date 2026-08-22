@@ -198,7 +198,7 @@ async function sendWhatsAppAlert(symbol, plan) {
   if (!ownerJid) {
     console.log("❌ No real phone JID captured yet.");
     console.log(
-      "📱 Send Nart Jnr one normal DM first, then alerts can use that chat."
+      "📱 Send KitSetups one normal DM first, then alerts can use that chat."
     );
     return false;
   }
@@ -519,7 +519,7 @@ async function runScanner() {
 }
 
 async function start() {
-  console.log("🚀 Nart Jnr trade scanner starting...");
+  console.log("🚀 KitSetups trade scanner starting...");
 
   const ownerIds = getOwnerIds();
 

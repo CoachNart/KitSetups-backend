@@ -9,7 +9,7 @@ const FILE = path.join(
 const EMPTY = {
   owner: {
     name: "Coach Nart",
-    preferredAssistantName: "Nart Jnr"
+    preferredAssistantName: "KitSetups"
   },
   facts: [],
   preferences: [],

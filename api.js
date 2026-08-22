@@ -1218,7 +1218,7 @@ async function handleRequest(req, res) {
         return sendJson(res, 400, {
           ok: false,
           error:
-            `Payment must be at least ${PREMIUM_PRICE_USDT} USDT sent to the Nart Jnr payment wallet`,
+            `Payment must be at least ${PREMIUM_PRICE_USDT} USDT sent to the KitSetups payment wallet`,
         });
       }
 
@@ -1376,7 +1376,7 @@ server.listen(
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     );
     console.log(
-      "🧠 NART JNR API"
+      "🧠 KitSetups API"
     );
     console.log(
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
