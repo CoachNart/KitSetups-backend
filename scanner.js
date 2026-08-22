@@ -528,8 +528,7 @@ async function start() {
   );
 
   if (!activeWhatsAppSocket) {
-    console.log("⏳ Waiting for WhatsApp socket...");
-    return;
+    console.log("📡 Running scanner without WhatsApp alerts.");
   }
 
   await runScanner();
