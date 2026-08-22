@@ -1565,7 +1565,7 @@ async function handleRequest(req, res) {
 const server =
   http.createServer(handleRequest);
 
-startSignalScanner();
+
 
 server.listen(
   PORT,
@@ -1575,6 +1575,13 @@ server.listen(
     console.log(
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     );
+
+    // Start the full Bybit scanner after the API is ready.
+    // Give Render a short head start so normal API requests
+    // are not competing with the initial 700+ pair scan.
+    setTimeout(() => {
+      startSignalScanner();
+    }, 10000);
     console.log(
       "🧠 KitSetups API"
     );
