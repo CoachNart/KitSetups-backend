@@ -67,20 +67,21 @@ async function runSignalScanner() {
 
   async function scanSymbol(symbol) {
     try {
-      console.log(`🔎 Scanner analyzing ${symbol}...`);
-
       const result =
         await marketEngine.analyzeMarket(symbol);
 
       const plan = result?.tradePlan;
 
-      if (plan?.status === "SETUP") {
-        signals.push(result);
-
-        console.log(
-          `🎯 SETUP FOUND: ${symbol} ${plan.direction} | RR ${plan.riskReward ?? "N/A"}`
-        );
+      // Only approved SETUP signals are collected.
+      if (plan?.status !== "SETUP") {
+        return;
       }
+
+      signals.push(result);
+
+      console.log(
+        `🎯 APPROVED SETUP: ${symbol} ${plan.direction} | RR ${plan.riskReward ?? "N/A"}`
+      );
     } catch (error) {
       console.error(
         `❌ Scanner failed for ${symbol}:`,
@@ -105,31 +106,30 @@ async function runSignalScanner() {
     await Promise.all(
       batch.map(scanSymbol)
     );
+  }
 
-    signals.sort(
-      (a, b) =>
-        new Date(b.generatedAt).getTime() -
-        new Date(a.generatedAt).getTime()
+  signals.sort(
+    (a, b) =>
+      new Date(b.generatedAt).getTime() -
+      new Date(a.generatedAt).getTime()
+  );
+
+  // Only approved SETUP signals are allowed into Firestore.
+  // Never overwrite existing approved signals with an empty scan.
+  if (signals.length > 0) {
+    await saveSignalsToFirestore(signals);
+
+    console.log(
+      `✅ Firestore updated: ${signals.length} approved SETUP signals from ${symbols.length} pairs`
     );
-
-    // Publish only when we actually have setups.
-    // This prevents an empty batch from wiping
-    // signals that were already published.
-    if (signals.length > 0) {
-      await saveSignalsToFirestore(signals);
-
-      console.log(
-        `📡 Published ${signals.length} SETUP signals after batch ${batchNumber}/${totalBatches}`
-      );
-    } else {
-      console.log(
-        `⏭️ No SETUP signals yet after batch ${batchNumber}/${totalBatches}`
-      );
-    }
+  } else {
+    console.log(
+      `⚠️ Scan completed: 0 approved SETUP signals from ${symbols.length} pairs. Existing Firestore signals preserved.`
+    );
   }
 
   console.log(
-    `📡 Scanner finished: ${signals.length} SETUP signals from ${symbols.length} pairs`
+    `🏁 Scanner finished: ${signals.length} approved signals / ${symbols.length} pairs`
   );
 }
 
