@@ -80,10 +80,6 @@ async function runSignalScanner() {
         console.log(
           `🎯 SETUP FOUND: ${symbol} ${plan.direction} | RR ${plan.riskReward ?? "N/A"}`
         );
-      } else {
-        console.log(
-          `⏭️ ${symbol}: ${plan?.status || "NO_PLAN"}`
-        );
       }
     } catch (error) {
       console.error(
@@ -93,25 +89,44 @@ async function runSignalScanner() {
     }
   }
 
+  const totalBatches = Math.ceil(
+    symbols.length / concurrency
+  );
+
   for (let i = 0; i < symbols.length; i += concurrency) {
     const batch = symbols.slice(i, i + concurrency);
+    const batchNumber =
+      Math.floor(i / concurrency) + 1;
 
     console.log(
-      `📡 Scanner batch ${Math.floor(i / concurrency) + 1}/${Math.ceil(symbols.length / concurrency)}`
+      `📡 Scanner batch ${batchNumber}/${totalBatches}`
     );
 
     await Promise.all(
       batch.map(scanSymbol)
     );
+
+    signals.sort(
+      (a, b) =>
+        new Date(b.generatedAt).getTime() -
+        new Date(a.generatedAt).getTime()
+    );
+
+    // Publish only when we actually have setups.
+    // This prevents an empty batch from wiping
+    // signals that were already published.
+    if (signals.length > 0) {
+      await saveSignalsToFirestore(signals);
+
+      console.log(
+        `📡 Published ${signals.length} SETUP signals after batch ${batchNumber}/${totalBatches}`
+      );
+    } else {
+      console.log(
+        `⏭️ No SETUP signals yet after batch ${batchNumber}/${totalBatches}`
+      );
+    }
   }
-
-  signals.sort(
-    (a, b) =>
-      new Date(b.generatedAt).getTime() -
-      new Date(a.generatedAt).getTime()
-  );
-
-  await saveSignalsToFirestore(signals);
 
   console.log(
     `📡 Scanner finished: ${signals.length} SETUP signals from ${symbols.length} pairs`
