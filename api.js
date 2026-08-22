@@ -69,35 +69,12 @@ async function publishApprovedSignal(signal) {
 
   const ref = db
     .collection(SIGNALS_COLLECTION)
-    .doc(SIGNALS_DOCUMENT);
+    .doc(symbol);
 
-  await db.runTransaction(async (transaction) => {
-    const doc = await transaction.get(ref);
-
-    const existingSignals =
-      doc.exists && Array.isArray(doc.data()?.signals)
-        ? doc.data().signals
-        : [];
-
-    const index = existingSignals.findIndex(
-      item => item?.symbol === symbol
-    );
-
-    if (index >= 0) {
-      existingSignals[index] = signal;
-    } else {
-      existingSignals.push(signal);
-    }
-
-    transaction.set(
-      ref,
-      {
-        signals: existingSignals,
-        updatedAt: new Date().toISOString()
-      },
-      { merge: true }
-    );
-  });
+  await ref.set({
+    ...signal,
+    updatedAt: new Date().toISOString()
+  }, { merge: true });
 
   console.log(
     `💾 Published approved signal: ${symbol} ${signal.tradePlan.direction} | RR ${signal.tradePlan.riskReward ?? "N/A"}`
@@ -1559,20 +1536,30 @@ async function handleRequest(req, res) {
       const user = getUser(userId);
       const isPremium = user.plan === "premium";
 
-      const signalDoc = await db
+      const signalSnapshot = await db
         .collection(SIGNALS_COLLECTION)
-        .doc(SIGNALS_DOCUMENT)
         .get();
 
       let signals = [];
 
-      if (signalDoc.exists) {
-        const storedData = signalDoc.data();
-
-        if (Array.isArray(storedData?.signals)) {
-          signals = storedData.signals;
+      signalSnapshot.forEach((doc) => {
+        if (doc.id === SIGNALS_DOCUMENT) {
+          return;
         }
-      }
+
+        const data = doc.data();
+
+        if (data?.symbol && data?.tradePlan) {
+          signals.push(data);
+        }
+      });
+
+      signals.sort((a, b) => {
+        const aTime = new Date(a.updatedAt || 0).getTime();
+        const bTime = new Date(b.updatedAt || 0).getTime();
+        return bTime - aTime;
+      });
+
 
       // Premium users get unlimited signals.
       if (isPremium) {
