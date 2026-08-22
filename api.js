@@ -1557,6 +1557,7 @@ async function handleRequest(req, res) {
       }
 
       const user = getUser(userId);
+      const isPremium = user.plan === "premium";
 
       const signalDoc = await db
         .collection(SIGNALS_COLLECTION)
@@ -1573,19 +1574,135 @@ async function handleRequest(req, res) {
         }
       }
 
-      const isPremium = user.plan === "premium";
+      // Premium users get unlimited signals.
+      if (isPremium) {
+        return sendJson(res, 200, {
+          ok: true,
+          data: {
+            signals,
+            plan: "premium",
+            unlimited: true,
+            signalLimit: null,
+            signalsUsed: null,
+            signalsRemaining: null,
+            limitReached: false
+          }
+        }, req);
+      }
 
-      const visibleSignals = isPremium
-        ? signals
-        : signals.slice(0, 5);
+          // FREE USERS: 5 UNIQUE SIGNALS PER CALENDAR MONTH
 
+      const now = new Date();
+
+      const monthKey =
+        `${now.getUTCFullYear()}-${String(
+          now.getUTCMonth() + 1
+        ).padStart(2, "0")}`;
+
+      const FREE_SIGNAL_LIMIT = 5;
+
+      const usageRef = db
+        .collection("signalUsage")
+        .doc(userId);
+
+      const usageDoc = await usageRef.get();
+
+      let consumedSymbols = [];
+
+      if (
+        usageDoc.exists &&
+        usageDoc.data()?.month === monthKey &&
+        Array.isArray(usageDoc.data()?.consumedSymbols)
+      ) {
+        consumedSymbols =
+          usageDoc.data().consumedSymbols;
+      }
+
+      const consumedSet =
+        new Set(consumedSymbols);
+
+      const signalsRemaining =
+        Math.max(
+          0,
+          FREE_SIGNAL_LIMIT - consumedSet.size
+        );
+
+      // Monthly limit already reached.
+      if (signalsRemaining === 0) {
+        return sendJson(res, 200, {
+          ok: true,
+          data: {
+            signals: [],
+            plan: "free",
+            unlimited: false,
+            signalLimit: FREE_SIGNAL_LIMIT,
+            signalsUsed: consumedSet.size,
+            signalsRemaining: 0,
+            limitReached: true,
+            message:
+              "You've used all 5 free signals this month. Upgrade to Premium for unlimited KitSetups."
+          }
+        }, req);
+      }
+
+      /*
+       * Only signals the user has NOT consumed before
+       * count toward the monthly allowance.
+       */
+      const unseenSignals =
+        signals.filter(
+          signal =>
+            signal?.symbol &&
+            !consumedSet.has(signal.symbol)
+        );
+
+      const visibleSignals =
+        unseenSignals.slice(
+          0,
+          signalsRemaining
+        );
+
+      /*
+       * Record these symbols as consumed.
+       * Refreshing the page will not consume them again.
+       */
+      for (const signal of visibleSignals) {
+        if (signal?.symbol) {
+          consumedSet.add(signal.symbol);
+        }
+      }
+
+      consumedSymbols =
+        Array.from(consumedSet);
+
+      if (visibleSignals.length > 0) {
+        await usageRef.set({
+          month: monthKey,
+          consumedSymbols,
+          signalsUsed: consumedSymbols.length,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
+
+      const finalUsed =
+        consumedSymbols.length;
+
+      const finalRemaining =
+        Math.max(
+          0,
+          FREE_SIGNAL_LIMIT - finalUsed
+        );
       return sendJson(res, 200, {
         ok: true,
         data: {
           signals: visibleSignals,
-          plan: isPremium ? "premium" : "free",
-          unlimited: isPremium,
-          signalLimit: isPremium ? null : 5
+          plan: "free",
+          unlimited: false,
+          signalLimit: FREE_SIGNAL_LIMIT,
+          signalsUsed: finalUsed,
+          signalsRemaining: finalRemaining,
+          limitReached:
+            finalUsed >= FREE_SIGNAL_LIMIT
         }
       }, req);
 
@@ -1597,7 +1714,7 @@ async function handleRequest(req, res) {
 
       return sendJson(res, 500, {
         ok: false,
-        error: error.message
+        error: "Failed to load signals"
       }, req);
     }
   }
