@@ -396,15 +396,66 @@ function clearSessionCookie(res) {
 }
 
 
+
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 60;
+const rateLimitStore = new Map();
+
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (forwarded) {
+    return String(forwarded).split(",")[0].trim();
+  }
+
+  return req.socket?.remoteAddress || "unknown";
+}
+
+function isRateLimited(req, key, max = RATE_LIMIT_MAX) {
+  const now = Date.now();
+  const clientKey = `${key}:${getClientIp(req)}`;
+
+  const existing = rateLimitStore.get(clientKey);
+
+  if (!existing || now - existing.startedAt >= RATE_LIMIT_WINDOW_MS) {
+    rateLimitStore.set(clientKey, {
+      startedAt: now,
+      count: 1,
+    });
+    return false;
+  }
+
+  existing.count++;
+
+  return existing.count > max;
+}
+
+function rejectRateLimit(res, req) {
+  return sendJson(res, 429, {
+    ok: false,
+    error: "Too many requests. Please try again shortly.",
+  }, req);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
+    let rejected = false;
 
     req.on("data", chunk => {
+      if (rejected) return;
+
       data += chunk;
+
+      if (data.length > 100000) {
+        rejected = true;
+        reject(new Error("Request body too large"));
+        req.destroy();
+      }
     });
 
     req.on("end", () => {
+      if (rejected) return;
+
       try {
         resolve(
           data
@@ -543,6 +594,26 @@ function getUser(userId) {
   }
 
   const user = store.users[userId];
+
+  // SECURITY: automatically expire Premium access.
+  if (
+    user.plan === "premium" &&
+    user.premiumExpiresAt &&
+    new Date(user.premiumExpiresAt).getTime() <= Date.now()
+  ) {
+    user.plan = "free";
+    user.monthlyUsage = 0;
+    user.usageMonth = getMonthKey();
+
+    delete user.paymentTx;
+    delete user.paymentAmount;
+    delete user.paymentNetwork;
+    delete user.paymentToken;
+    delete user.premiumStartedAt;
+    delete user.premiumExpiresAt;
+
+    writeSubscriptions(store);
+  }
 
   const currentMonth = getMonthKey();
 
@@ -824,6 +895,10 @@ async function handleRequest(req, res) {
     req.method === "POST" &&
     url.startsWith("/api/auth/signup")
   ) {
+    if (isRateLimited(req, "signup", 10)) {
+      return rejectRateLimit(res, req);
+    }
+
     try {
       const body = await readBody(req);
 
@@ -918,6 +993,10 @@ async function handleRequest(req, res) {
     req.method === "POST" &&
     url.startsWith("/api/auth/login")
   ) {
+    if (isRateLimited(req, "login", 10)) {
+      return rejectRateLimit(res, req);
+    }
+
     try {
       const body = await readBody(req);
 
@@ -1092,6 +1171,10 @@ async function handleRequest(req, res) {
     req.method === "GET" &&
     url.startsWith("/api/analysis")
   ) {
+    if (isRateLimited(req, "analysis", 30)) {
+      return rejectRateLimit(res, req);
+    }
+
     try {
       const symbol =
         query.symbol || "BTCUSDT";
@@ -1258,6 +1341,10 @@ async function handleRequest(req, res) {
     req.method === "POST" &&
     url.startsWith("/api/payment/verify")
   ) {
+    if (isRateLimited(req, "payment", 10)) {
+      return rejectRateLimit(res, req);
+    }
+
     try {
       const body = await new Promise((resolve, reject) => {
         let raw = "";
@@ -1282,9 +1369,15 @@ async function handleRequest(req, res) {
         req.on("error", reject);
       });
 
+      const firebaseUserId =
+        await getFirebaseUserId(req);
+
+      const sessionUserId =
+        getAuthenticatedUserId(req);
+
       const userId =
-        req.headers["x-nart-user"] ||
-        body.user ||
+        firebaseUserId ||
+        sessionUserId ||
         null;
 
       const txHash =
@@ -1536,21 +1629,19 @@ async function handleRequest(req, res) {
     url.startsWith("/api/signals")
   ) {
     try {
+      // SECURITY: only verified Firebase identity or
+      // an authenticated server session may access signals.
+      // Never trust x-nart-user/query.user as authentication.
       const firebaseUserId =
-      await getFirebaseUserId(req);
+        await getFirebaseUserId(req);
 
-    const sessionUserId =
-      getAuthenticatedUserId(req);
+      const sessionUserId =
+        getAuthenticatedUserId(req);
 
-    const headerUserId =
-      req.headers["x-nart-user"] ||
-      query.user ||
-      null;
-
-    const userId =
-      firebaseUserId ||
-      sessionUserId ||
-      headerUserId;
+      const userId =
+        firebaseUserId ||
+        sessionUserId ||
+        null;
 
     if (!userId) {
       return sendJson(res, 401, {
