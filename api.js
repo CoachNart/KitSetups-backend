@@ -141,6 +141,14 @@ async function publishApprovedSignal(signal) {
   console.log(
     `💾 Published approved signal: ${symbol} ${signal.tradePlan.direction} | RR ${signal.tradePlan.riskReward ?? "N/A"}`
   );
+
+  await sendPushToAllUsers({
+    title: `KitSetups · ${symbol}`,
+    body: `${signal.tradePlan.direction} setup confirmed · RR ${signal.tradePlan.riskReward ?? "N/A"}`,
+    url: "/?tab=setups",
+  });
+
+  console.log(`🔔 Push notification sent for ${symbol}`);
 }
 
 async function runSignalScanner() {
@@ -1677,6 +1685,126 @@ async function handleRequest(req, res) {
         wallet: PAYMENT_ADDRESS,
       },
     });
+  }
+
+  /*
+   * WEB PUSH
+   */
+
+  if (
+    req.method === "POST" &&
+    url.startsWith("/api/push/subscribe")
+  ) {
+    try {
+      const firebaseUserId = await getFirebaseUserId(req);
+      const sessionUserId = getAuthenticatedUserId(req);
+      const userId = firebaseUserId || sessionUserId || null;
+
+      if (!userId) {
+        return sendJson(res, 401, {
+          ok: false,
+          error: "Authentication required",
+        }, req);
+      }
+
+      const body = await readJsonBody(req);
+      const subscription = body?.subscription;
+
+      if (
+        !subscription ||
+        typeof subscription.endpoint !== "string" ||
+        !subscription.keys?.p256dh ||
+        !subscription.keys?.auth
+      ) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "Invalid push subscription",
+        }, req);
+      }
+
+      const store = readSubscriptions();
+
+      if (!Array.isArray(store.users[userId])) {
+        store.users[userId] = [];
+      }
+
+      const exists = store.users[userId].some(
+        (item) => item.endpoint === subscription.endpoint
+      );
+
+      if (!exists) {
+        store.users[userId].push(subscription);
+        writeSubscriptions(store);
+      }
+
+      return sendJson(res, 200, {
+        ok: true,
+        message: "Push subscription saved",
+      }, req);
+    } catch (error) {
+      console.error(
+        "❌ Push subscribe error:",
+        error.stack || error.message
+      );
+
+      return sendJson(res, 500, {
+        ok: false,
+        error: "Failed to save push subscription",
+      }, req);
+    }
+  }
+
+  if (
+    req.method === "POST" &&
+    url.startsWith("/api/push/unsubscribe")
+  ) {
+    try {
+      const firebaseUserId = await getFirebaseUserId(req);
+      const sessionUserId = getAuthenticatedUserId(req);
+      const userId = firebaseUserId || sessionUserId || null;
+
+      if (!userId) {
+        return sendJson(res, 401, {
+          ok: false,
+          error: "Authentication required",
+        }, req);
+      }
+
+      const body = await readJsonBody(req);
+      const endpoint = body?.endpoint;
+
+      if (typeof endpoint !== "string" || !endpoint) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "Push endpoint is required",
+        }, req);
+      }
+
+      const store = readSubscriptions();
+
+      if (Array.isArray(store.users[userId])) {
+        store.users[userId] = store.users[userId].filter(
+          (item) => item.endpoint !== endpoint
+        );
+
+        writeSubscriptions(store);
+      }
+
+      return sendJson(res, 200, {
+        ok: true,
+        message: "Push subscription removed",
+      }, req);
+    } catch (error) {
+      console.error(
+        "❌ Push unsubscribe error:",
+        error.stack || error.message
+      );
+
+      return sendJson(res, 500, {
+        ok: false,
+        error: "Failed to remove push subscription",
+      }, req);
+    }
   }
 
   /*
