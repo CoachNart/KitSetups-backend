@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { ethers } = require("ethers");
 const crypto = require("crypto");
+const webpush = require("web-push");
 const marketEngine = require("./src/tools/marketEngine");
 const market = require("./src/tools/market");
 const { getApps, initializeApp, cert } = require("firebase-admin/app");
@@ -36,6 +37,21 @@ const firebaseAuth = getAuth();
 const db = getFirestore();
 
 
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "";
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && VAPID_SUBJECT) {
+  webpush.setVapidDetails(
+    VAPID_SUBJECT,
+    VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY
+  );
+  console.log("🔔 Web Push: READY");
+} else {
+  console.warn("⚠️ Web Push: VAPID environment variables missing");
+}
+
 const SIGNALS_COLLECTION = "signals";
 const SIGNALS_DOCUMENT = "latest";
 
@@ -51,6 +67,52 @@ async function saveSignalsToFirestore(signals) {
   console.log(
     `📡 Saved ${signals.length} signals to Firestore`
   );
+}
+
+
+async function sendPushToUser(userId, payload) {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY || !VAPID_SUBJECT) {
+    console.warn("⚠️ Web Push not configured. Skipping notification.");
+    return;
+  }
+
+  const store = readSubscriptions();
+  const subscriptions = store.users[userId] || [];
+
+  for (const subscription of [...subscriptions]) {
+    try {
+      await webpush.sendNotification(
+        subscription,
+        JSON.stringify(payload)
+      );
+    } catch (error) {
+      console.error(
+        "❌ Push delivery failed:",
+        error.statusCode || error.message
+      );
+
+      if (error.statusCode === 404 || error.statusCode === 410) {
+        store.users[userId] = store.users[userId].filter(
+          (item) => item.endpoint !== subscription.endpoint
+        );
+      }
+    }
+  }
+
+  writeSubscriptions(store);
+}
+
+async function sendPushToAllUsers(payload) {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY || !VAPID_SUBJECT) {
+    console.warn("⚠️ Web Push not configured. Skipping notification.");
+    return;
+  }
+
+  const store = readSubscriptions();
+
+  for (const userId of Object.keys(store.users)) {
+    await sendPushToUser(userId, payload);
+  }
 }
 
 async function publishApprovedSignal(signal) {
