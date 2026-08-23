@@ -1694,128 +1694,55 @@ async function handleRequest(req, res) {
         }, req);
       }
 
-          // FREE USERS: 5 UNIQUE SIGNALS PER CALENDAR MONTH
+          // FREE USERS: FULL ACCESS FOR FIRST 3 DAYS
+      const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
 
-      const now = new Date();
+      const createdAtMs = user.createdAt
+        ? new Date(user.createdAt).getTime()
+        : NaN;
 
-      const monthKey =
-        `${now.getUTCFullYear()}-${String(
-          now.getUTCMonth() + 1
-        ).padStart(2, "0")}`;
+      const trialActive =
+        Number.isFinite(createdAtMs) &&
+        Date.now() - createdAtMs < TRIAL_DURATION_MS;
 
-      const FREE_SIGNAL_LIMIT = 5;
+      const trialEndsAt =
+        Number.isFinite(createdAtMs)
+          ? new Date(createdAtMs + TRIAL_DURATION_MS).toISOString()
+          : null;
 
-      const usageRef = db
-        .collection("signalUsage")
-        .doc(userId);
-
-      const usageDoc = await usageRef.get();
-
-      let consumedSymbols = [];
-
-      if (
-        usageDoc.exists &&
-        usageDoc.data()?.month === monthKey &&
-        Array.isArray(usageDoc.data()?.consumedSymbols)
-      ) {
-        consumedSymbols =
-          usageDoc.data().consumedSymbols;
-      }
-
-      const consumedSet =
-        new Set(consumedSymbols);
-
-      const signalsRemaining =
-        Math.max(
-          0,
-          FREE_SIGNAL_LIMIT - consumedSet.size
-        );
-
-      // Monthly limit already reached.
-      if (signalsRemaining === 0) {
-        return sendJson(res, 200, {
-          ok: true,
-          data: {
-            signals: [],
-            plan: "free",
-            unlimited: false,
-            signalLimit: FREE_SIGNAL_LIMIT,
-            signalsUsed: consumedSet.size,
-            signalsRemaining: 0,
-            limitReached: true,
-            message:
-              "You've used all 5 free signals this month. Upgrade to Premium for unlimited KitSetups."
-          }
-        }, req);
-      }
-
-      /*
-       * Only signals the user has NOT consumed before
-       * count toward the monthly allowance.
-       */
-      const unseenSignals =
-        signals.filter(
-          signal =>
-            signal?.symbol &&
-            !consumedSet.has(signal.symbol)
-        );
-
-      const visibleSignals =
-        unseenSignals.slice(
-          0,
-          signalsRemaining
-        );
-
-      /*
-       * Record these symbols as consumed.
-       * Refreshing the page will not consume them again.
-       */
-      for (const signal of visibleSignals) {
-        if (signal?.symbol) {
-          consumedSet.add(signal.symbol);
-        }
-      }
-
-      consumedSymbols =
-        Array.from(consumedSet);
-
-      if (visibleSignals.length > 0) {
-        await usageRef.set({
-          month: monthKey,
-          consumedSymbols,
-          signalsUsed: consumedSymbols.length,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-      }
-
-      const finalUsed =
-        consumedSymbols.length;
-
-      const finalRemaining =
-        Math.max(
-          0,
-          FREE_SIGNAL_LIMIT - finalUsed
-        );
-      console.log("📡 SIGNAL DEBUG:", {
+      console.log("📡 SIGNAL ACCESS DEBUG:", {
         userId,
-        firestoreSignals: signals.length,
-        consumed: consumedSet.size,
-        remaining: signalsRemaining,
-        visible: visibleSignals.length,
-        symbols: visibleSignals.map(s => s.symbol),
+        plan: user.plan,
+        createdAt: user.createdAt,
+        trialActive,
+        trialEndsAt,
+        signalCount: signals.length,
       });
 
       return sendJson(res, 200, {
         ok: true,
         data: {
-          signals: visibleSignals,
+          signals,
           plan: "free",
           unlimited: false,
-          signalLimit: FREE_SIGNAL_LIMIT,
-          signalsUsed: finalUsed,
-          signalsRemaining: finalRemaining,
-          limitReached:
-            finalUsed >= FREE_SIGNAL_LIMIT
+
+          // Frontend uses this to keep signals visible
+          // while locking access after the free trial.
+          trialActive,
+          trialEndsAt,
+
+          // All signals remain visible after the trial.
+          // They are locked instead of disappearing.
+          locked: !trialActive,
+
+          signalLimit: null,
+          signalsUsed: null,
+          signalsRemaining: null,
+          limitReached: !trialActive,
+
+          message: trialActive
+            ? "Free trial active. You have full signal access for your first 3 days."
+            : "Your 3-day free access has ended. Upgrade to Premium to unlock all KitSetups.",
         }
       }, req);
 
