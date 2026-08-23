@@ -435,16 +435,25 @@ const PLANS = {
   },
 };
 
+function getCorsOrigin(req) {
+  const origin = req?.headers?.origin || "";
+
+  const allowedOrigins = [
+    "https://kitsetups.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+  ];
+
+  return allowedOrigins.includes(origin)
+    ? origin
+    : "https://kitsetups.vercel.app";
+}
+
 function sendJson(res, status, data, req = null) {
   const body = JSON.stringify(data);
 
-  const origin =
-    req?.headers?.origin || "";
-
   const allowedOrigin =
-    origin === "https://kitsetups.vercel.app"
-      ? origin
-      : "https://kitsetups.vercel.app";
+    getCorsOrigin(req);
 
   res.writeHead(status, {
     "Content-Type": "application/json",
@@ -453,7 +462,7 @@ function sendJson(res, status, data, req = null) {
     "Access-Control-Allow-Methods":
       "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
-      "Content-Type",
+      "Content-Type, Authorization, X-Nart-User",
     "Vary": "Origin",
   });
 
@@ -1042,9 +1051,7 @@ async function handleRequest(req, res) {
       req.headers.origin || "";
 
     const allowedOrigin =
-      origin === "https://kitsetups.vercel.app"
-        ? origin
-        : "https://kitsetups.vercel.app";
+      getCorsOrigin(req);
 
     res.writeHead(204, {
       "Access-Control-Allow-Origin":
@@ -1054,7 +1061,7 @@ async function handleRequest(req, res) {
       "Access-Control-Allow-Methods":
         "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers":
-        "Content-Type",
+        "Content-Type, Authorization, X-Nart-User",
       "Vary": "Origin",
     });
 
@@ -1529,16 +1536,30 @@ async function handleRequest(req, res) {
     url.startsWith("/api/signals")
   ) {
     try {
-      const userId = await getFirebaseUserId(req);
+      const firebaseUserId =
+      await getFirebaseUserId(req);
 
-      if (!userId) {
-        return sendJson(res, 401, {
-          ok: false,
-          error: "Authentication required"
-        }, req);
-      }
+    const sessionUserId =
+      getAuthenticatedUserId(req);
 
-      const user = getUser(userId);
+    const headerUserId =
+      req.headers["x-nart-user"] ||
+      query.user ||
+      null;
+
+    const userId =
+      firebaseUserId ||
+      sessionUserId ||
+      headerUserId;
+
+    if (!userId) {
+      return sendJson(res, 401, {
+        ok: false,
+        error: "Authentication required"
+      }, req);
+    }
+
+    const user = getUser(userId);
       const isPremium = user.plan === "premium";
 
       const signalSnapshot = await db
