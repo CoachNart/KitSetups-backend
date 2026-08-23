@@ -42,3 +42,6 @@ firebase-key.b64
 
 # Local backup files
 api.js.before-*
+
+# Local API backups
+api.js.before-*
