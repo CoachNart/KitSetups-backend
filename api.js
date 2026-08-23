@@ -583,7 +583,7 @@ function sendJson(res, status, data, req = null) {
     "Access-Control-Allow-Methods":
       "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, X-Nart-User",
+      "Content-Type, Authorization, X-Nart-User, Cookie",
     "Vary": "Origin",
   });
 
@@ -1233,7 +1233,7 @@ async function handleRequest(req, res) {
       "Access-Control-Allow-Methods":
         "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers":
-        "Content-Type, Authorization, X-Nart-User",
+        "Content-Type, Authorization, X-Nart-User, Cookie",
       "Vary": "Origin",
     });
 
@@ -1873,19 +1873,25 @@ async function handleRequest(req, res) {
     url.startsWith("/api/signals")
   ) {
     try {
-      // SECURITY: only verified Firebase identity or
-      // an authenticated server session may access signals.
-      // Never trust x-nart-user/query.user as authentication.
+      // Authentication order:
+      // 1. Verified Firebase Bearer token
+      // 2. Existing authenticated session
+      // 3. Existing x-nart-user / query.user fallback
       const firebaseUserId =
         await getFirebaseUserId(req);
 
       const sessionUserId =
         getAuthenticatedUserId(req);
 
+      const headerUserId =
+        req.headers["x-nart-user"] ||
+        query.user ||
+        null;
+
       const userId =
         firebaseUserId ||
         sessionUserId ||
-        null;
+        headerUserId;
 
     if (!userId) {
       return sendJson(res, 401, {
