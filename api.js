@@ -90,7 +90,9 @@ async function runSignalScanner() {
     `📊 Bybit returned ${symbols.length} active USDT perpetual pairs`
   );
 
-  const concurrency = 5;
+  // Keep Bybit requests below its rate limit.
+  // The market engine makes multiple API calls per symbol.
+  const concurrency = 1;
   let approvedCount = 0;
 
   async function scanSymbol(symbol) {
@@ -138,6 +140,9 @@ async function runSignalScanner() {
     await Promise.all(
       batch.map(scanSymbol)
     );
+
+    // Small pause between batches to avoid Bybit API 10006.
+    await new Promise(resolve => setTimeout(resolve, 1200));
   }
 
   console.log(
@@ -1679,6 +1684,15 @@ async function handleRequest(req, res) {
           0,
           FREE_SIGNAL_LIMIT - finalUsed
         );
+      console.log("📡 SIGNAL DEBUG:", {
+        userId,
+        firestoreSignals: signals.length,
+        consumed: consumedSet.size,
+        remaining: signalsRemaining,
+        visible: visibleSignals.length,
+        symbols: visibleSignals.map(s => s.symbol),
+      });
+
       return sendJson(res, 200, {
         ok: true,
         data: {
