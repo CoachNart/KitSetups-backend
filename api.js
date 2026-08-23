@@ -544,15 +544,15 @@ function readBody(req) {
 }
 
 
+const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
+
 const PLANS = {
   free: {
     name: "FREE",
-    monthlyLimit: 5,
   },
 
   premium: {
     name: "PREMIUM",
-    monthlyLimit: Infinity,
   },
 };
 
@@ -652,12 +652,13 @@ function getUser(userId) {
   const store = readSubscriptions();
 
   if (!store.users[userId]) {
+    const now = new Date().toISOString();
+
     store.users[userId] = {
       id: userId,
       plan: "free",
-      monthlyUsage: 0,
-      usageMonth: getMonthKey(),
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      trialStartedAt: now,
     };
 
     writeSubscriptions(store);
@@ -665,15 +666,22 @@ function getUser(userId) {
 
   const user = store.users[userId];
 
-  // SECURITY: automatically expire Premium access.
+  // Migration for existing users.
+  if (!user.createdAt) {
+    user.createdAt = new Date().toISOString();
+  }
+
+  if (!user.trialStartedAt) {
+    user.trialStartedAt = user.createdAt;
+  }
+
+  // Automatically expire Premium access.
   if (
     user.plan === "premium" &&
     user.premiumExpiresAt &&
     new Date(user.premiumExpiresAt).getTime() <= Date.now()
   ) {
     user.plan = "free";
-    user.monthlyUsage = 0;
-    user.usageMonth = getMonthKey();
 
     delete user.paymentTx;
     delete user.paymentAmount;
@@ -681,20 +689,35 @@ function getUser(userId) {
     delete user.paymentToken;
     delete user.premiumStartedAt;
     delete user.premiumExpiresAt;
-
-    writeSubscriptions(store);
   }
 
-  const currentMonth = getMonthKey();
-
-  if (user.usageMonth !== currentMonth) {
-    user.monthlyUsage = 0;
-    user.usageMonth = currentMonth;
-
-    writeSubscriptions(store);
-  }
+  writeSubscriptions(store);
 
   return user;
+}
+
+function getTrialInfo(user) {
+  const startedAt = new Date(
+    user.trialStartedAt || user.createdAt
+  ).getTime();
+
+  const endsAt = startedAt + TRIAL_DURATION_MS;
+  const now = Date.now();
+
+  return {
+    active: now < endsAt,
+    startedAt: new Date(startedAt).toISOString(),
+    endsAt: new Date(endsAt).toISOString(),
+    remainingMs: Math.max(endsAt - now, 0),
+  };
+}
+
+function hasActiveAccess(user) {
+  if (user.plan === "premium") {
+    return true;
+  }
+
+  return getTrialInfo(user).active;
 }
 
 function getPlan(user) {
@@ -1236,7 +1259,6 @@ async function handleRequest(req, res) {
   /*
    * MARKET ANALYSIS
    */
-
   if (
     req.method === "GET" &&
     url.startsWith("/api/analysis")
@@ -1245,12 +1267,44 @@ async function handleRequest(req, res) {
       return rejectRateLimit(res, req);
     }
 
+    // SECURITY: identify the actual authenticated user.
+    // Never trust x-nart-user or query.user for paid access.
+    const firebaseUserId =
+      await getFirebaseUserId(req);
+
+    const sessionUserId =
+      getAuthenticatedUserId(req);
+
+    const userId =
+      firebaseUserId ||
+      sessionUserId ||
+      null;
+
+    if (!userId) {
+      return sendJson(res, 401, {
+        ok: false,
+        error: "Authentication required",
+      }, req);
+    }
+
+    const user = getUser(userId);
+
+    if (!hasActiveAccess(user)) {
+      const trial = getTrialInfo(user);
+
+      return sendJson(res, 403, {
+        ok: false,
+        error: "Free trial ended",
+        code: "TRIAL_ENDED",
+        trialEndsAt: trial.endsAt,
+      }, req);
+    }
+
     try {
-      const symbol =
-        query.symbol || "BTCUSDT";
+      const symbol = query.symbol || "BTCUSDT";
 
       console.log(
-        `🔎 API analysis request: ${symbol}`
+        `🔎 API analysis request: ${symbol} · ${user.plan}`
       );
 
       const result =
@@ -1259,7 +1313,7 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, {
         ok: true,
         data: result,
-      });
+      }, req);
     } catch (error) {
       console.error(
         "❌ Analysis API error:",
@@ -1269,30 +1323,33 @@ async function handleRequest(req, res) {
       return sendJson(res, 500, {
         ok: false,
         error: error.message,
-      });
+      }, req);
     }
   }
 
   /*
    * ACCOUNT
    */
-
   if (
     req.method === "GET" &&
     url.startsWith("/api/account")
   ) {
-    const userId =
-      getUserId(req, query);
+    const userId = getUserId(req, query);
 
     if (!userId) {
       return sendJson(res, 400, {
         ok: false,
         error: "Missing user identifier",
-      });
+      }, req);
     }
 
     const user = getUser(userId);
     const plan = getPlan(user);
+
+    const trial =
+      user.plan === "free"
+        ? getTrialInfo(user)
+        : null;
 
     return sendJson(res, 200, {
       ok: true,
@@ -1300,23 +1357,20 @@ async function handleRequest(req, res) {
         id: user.id,
         plan: user.plan,
         planName: plan.name,
-        monthlyLimit:
-          plan.monthlyLimit === Infinity
-            ? null
-            : plan.monthlyLimit,
-        monthlyUsage: user.monthlyUsage,
-        remaining:
-          plan.monthlyLimit === Infinity
-            ? null
-            : Math.max(
-                plan.monthlyLimit -
-                  user.monthlyUsage,
-                0
-              ),
-        usageMonth:
-          user.usageMonth,
+        trialActive:
+          user.plan === "premium"
+            ? true
+            : trial.active,
+        trialStartedAt:
+          trial?.startedAt || null,
+        trialEndsAt:
+          trial?.endsAt || null,
+        trialRemainingMs:
+          trial?.remainingMs || null,
+        accessLocked:
+          !hasActiveAccess(user),
       },
-    });
+    }, req);
   }
 
   /*
@@ -1884,26 +1938,17 @@ async function handleRequest(req, res) {
         }, req);
       }
 
-          // FREE USERS: FULL ACCESS FOR FIRST 3 DAYS
-      const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
-
-      const createdAtMs = user.createdAt
-        ? new Date(user.createdAt).getTime()
-        : NaN;
-
-      const trialActive =
-        Number.isFinite(createdAtMs) &&
-        Date.now() - createdAtMs < TRIAL_DURATION_MS;
-
-      const trialEndsAt =
-        Number.isFinite(createdAtMs)
-          ? new Date(createdAtMs + TRIAL_DURATION_MS).toISOString()
-          : null;
+          // FREE USERS: FULL ACCESS FOR THE FIRST 3 DAYS.
+      // Use the shared trial system so signals and analysis
+      // always calculate access the same way.
+      const trial = getTrialInfo(user);
+      const trialActive = trial.active;
+      const trialEndsAt = trial.endsAt;
 
       console.log("📡 SIGNAL ACCESS DEBUG:", {
         userId,
         plan: user.plan,
-        createdAt: user.createdAt,
+        trialStartedAt: trial.startedAt,
         trialActive,
         trialEndsAt,
         signalCount: signals.length,
@@ -1916,19 +1961,16 @@ async function handleRequest(req, res) {
           plan: "free",
           unlimited: false,
 
-          // Frontend uses this to keep signals visible
-          // while locking access after the free trial.
           trialActive,
           trialEndsAt,
 
-          // All signals remain visible after the trial.
-          // They are locked instead of disappearing.
-          locked: !trialActive,
+          // Signals remain visible after expiry but are locked.
+          locked: !hasActiveAccess(user),
 
           signalLimit: null,
           signalsUsed: null,
           signalsRemaining: null,
-          limitReached: !trialActive,
+          limitReached: !hasActiveAccess(user),
 
           message: trialActive
             ? "Free trial active. You have full signal access for your first 3 days."

@@ -39,3 +39,6 @@ firebase-key.b64
 
 firebase-admin.js
 firebase-key.b64
+
+# Local backup files
+api.js.before-*
