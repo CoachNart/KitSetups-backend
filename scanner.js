@@ -1,3 +1,4 @@
+const { randomUUID } = require("crypto");
 require("dotenv").config();
 
 const market = require("./src/tools/market");
@@ -181,13 +182,19 @@ function mergeLifecycle(result, previousSignal) {
 
 async function loadPreviousSignal(symbol) {
   try {
-    const snapshot = await db.collection(SIGNALS_COLLECTION).doc(symbol).get();
+    const snapshot = await db
+      .collection(SIGNALS_COLLECTION)
+      .where("symbol", "==", symbol)
+      .where("published", "==", true)
+      .orderBy("publishedAt", "desc")
+      .limit(1)
+      .get();
 
-    if (!snapshot.exists) {
+    if (snapshot.empty) {
       return null;
     }
 
-    return snapshot.data();
+    return snapshot.docs[0].data();
   } catch (error) {
     console.warn(
       `⚠️ Previous signal lookup failed for ${symbol}:`,
@@ -203,9 +210,23 @@ async function publishSymbolSignal(signal) {
     return;
   }
 
-  await db.collection(SIGNALS_COLLECTION).doc(signal.symbol).set(signal, {
-    merge: true,
-  });
+  const signalId =
+    signal.signalId ||
+    `ks_${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}_${randomUUID().slice(0, 8)}`;
+
+  const historicalSignal = {
+    ...signal,
+    signalId,
+    published: true,
+    publishedAt: signal.publishedAt || new Date().toISOString(),
+  };
+
+  await db
+    .collection(SIGNALS_COLLECTION)
+    .doc(signalId)
+    .set(historicalSignal, {
+      merge: true,
+    });
 
   console.log(`💾 ${signal.symbol} published`);
 }
@@ -361,33 +382,27 @@ async function cleanupStaleSignals(activeSymbols) {
     const staleRefs = [];
 
     snapshot.forEach((doc) => {
-      if (doc.id === SIGNALS_DOCUMENT || activeSymbols.has(doc.id)) {
+      // The frontend snapshot is never cleaned.
+      if (doc.id === SIGNALS_DOCUMENT) {
         return;
       }
 
       const data = doc.data() || {};
 
-      const lifecycle = getLifecycleStatus(data);
-
-      /*
-       * Terminal lifecycle records are retained.
-       */
-      /*
-       * Historical signal records are permanent.
-       *
-       * The live feed is allowed to change, but records must not
-       * be deleted simply because a symbol is no longer active.
-       */
+      // Published signals are historical records.
+      // They must NEVER be deleted by stale-symbol cleanup.
       if (data.published === true) {
+        return;
+      }
+
+      // Only legacy/non-published symbol records can be cleaned.
+      if (activeSymbols.has(doc.id)) {
         return;
       }
 
       staleRefs.push(doc.ref);
     });
 
-    /*
-     * Firestore batch limit.
-     */
     for (let i = 0; i < staleRefs.length; i += 450) {
       const batch = db.batch();
 
@@ -400,9 +415,14 @@ async function cleanupStaleSignals(activeSymbols) {
       await batch.commit();
     }
 
-    console.log(`🧹 Stale symbol records removed: ${staleRefs.length}`);
+    console.log(
+      `🧹 Stale non-published records removed: ${staleRefs.length}`,
+    );
   } catch (error) {
-    console.error("❌ Stale signal cleanup failed:", error.message || error);
+    console.error(
+      "❌ Stale signal cleanup failed:",
+      error.message || error,
+    );
   }
 }
 

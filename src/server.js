@@ -5,6 +5,7 @@ const { authRoutes } = require("./routes/auth");
 const { accountRoutes } = require("./routes/account");
 const { registerRoutes } = require("./routes/register");
 const { signalsRoutes } = require("./routes/signals");
+const { signalHistoryRoutes } = require("./routes/signalHistory");
 const { analysisRoutes } = require("./routes/analysis");
 const { developerRoutes } = require("./routes/developer");
 const { start: startScanner } = require("../scanner");
@@ -46,6 +47,10 @@ const server = http.createServer(async (req, res) => {
     const accountHandled = await accountRoutes(req, res);
 
     if (accountHandled !== false) return accountHandled;
+
+    const signalHistoryHandled = await signalHistoryRoutes(req, res);
+
+    if (signalHistoryHandled !== false) return signalHistoryHandled;
 
     const signalsHandled = await signalsRoutes(req, res);
 
