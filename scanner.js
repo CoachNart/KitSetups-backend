@@ -372,7 +372,13 @@ async function cleanupStaleSignals(activeSymbols) {
       /*
        * Terminal lifecycle records are retained.
        */
-      if (data.published === true && CLOSED_STATES.has(lifecycle)) {
+      /*
+       * Historical signal records are permanent.
+       *
+       * The live feed is allowed to change, but records must not
+       * be deleted simply because a symbol is no longer active.
+       */
+      if (data.published === true) {
         return;
       }
 
@@ -433,18 +439,17 @@ async function scanSymbol(symbol) {
      * are allowed into the published feed.
      */
     if (actionableSignals.length === 0) {
-      try {
-        await db.collection(SIGNALS_COLLECTION).doc(symbol).delete();
-
-        console.log(
-          `   └─ ${symbol}: 0 actionable signal(s) — intelligence retained`,
-        );
-      } catch (error) {
-        console.warn(
-          `⚠️ ${symbol}: failed to remove stale signal:`,
-          error.message || error,
-        );
-      }
+      /*
+       * IMPORTANT:
+       * Never delete a previously published signal here.
+       *
+       * The live feed may have no actionable signal right now,
+       * but historical signal records must remain available
+       * for lifecycle tracking and track-record history.
+       */
+      console.log(
+        `   └─ ${symbol}: 0 actionable signal(s) — historical record retained`,
+      );
 
       /*
        * IMPORTANT:
