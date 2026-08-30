@@ -47,23 +47,15 @@ async function signalsRoutes(req, res) {
 
       const access = getAccessState(account);
 
-      if (!access.hasAccess) {
-        return json(res, 403, {
-          ok: false,
-
-          error: "Active subscription required",
-
-          code: "ACCESS_EXPIRED",
-
-          data: {
-            signals: [],
-            setups: {},
-            access,
-
-            subscribeRequired: true,
-          },
-        });
-      }
+      /*
+       * ACCESS MODEL
+       *
+       * Expired trial/premium users still receive a safe
+       * preview of published signals.
+       *
+       * Execution data is removed server-side so it cannot
+       * be recovered from the browser/API response.
+       */
 
       /*
        * FRONTEND DATA SOURCE
@@ -100,6 +92,57 @@ async function signalsRoutes(req, res) {
       const scannerData = snapshot.data() || {};
 
       /*
+       * EXPIRED ACCESS PREVIEW
+       *
+       * Keep signal metadata available for the frontend
+       * while protecting execution levels.
+       */
+      let responseSignals = Array.isArray(scannerData.signals)
+        ? scannerData.signals
+        : [];
+
+      if (!access.hasAccess) {
+        responseSignals = responseSignals.map((signal) => {
+          const safeSignal = { ...signal };
+
+          delete safeSignal.entry;
+          delete safeSignal.stop;
+          delete safeSignal.target;
+          delete safeSignal.entryZone;
+          delete safeSignal.reason;
+
+          if (safeSignal.tradePlan) {
+            safeSignal.tradePlan = { ...safeSignal.tradePlan };
+            delete safeSignal.tradePlan.entry;
+            delete safeSignal.tradePlan.stop;
+            delete safeSignal.tradePlan.target;
+            delete safeSignal.tradePlan.entryZone;
+            delete safeSignal.tradePlan.reason;
+          }
+
+          /*
+           * Preserve lifecycle state for locked previews,
+           * but never expose target execution prices.
+           */
+          if (safeSignal.lifecycle) {
+            safeSignal.lifecycle = { ...safeSignal.lifecycle };
+
+            if (Array.isArray(safeSignal.lifecycle.targets)) {
+              safeSignal.lifecycle.targets = safeSignal.lifecycle.targets.map(
+                (target) => {
+                  const safeTarget = { ...target };
+                  delete safeTarget.price;
+                  return safeTarget;
+                },
+              );
+            }
+          }
+
+          return safeSignal;
+        });
+      }
+
+      /*
        * signals/latest is the compact frontend index.
        *
        * Full engine intelligence lives in:
@@ -116,9 +159,11 @@ async function signalsRoutes(req, res) {
         data: {
           ...scannerData,
 
+          signals: responseSignals,
+
           access,
 
-          subscribeRequired: false,
+          subscribeRequired: !access.hasAccess,
 
           scanner: scannerData.scanner || null,
         },
