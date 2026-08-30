@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+npm-debug.log*
+*.log
+.DS_Store
+
+# Local scanner backups
+scanner.js.bak.*
+scanner.js.before-*
+scanner.js.pre-*
