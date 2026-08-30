@@ -7,6 +7,7 @@ const { registerRoutes } = require("./routes/register");
 const { signalsRoutes } = require("./routes/signals");
 const { analysisRoutes } = require("./routes/analysis");
 const { developerRoutes } = require("./routes/developer");
+const { start: startScanner } = require("../scanner");
 
 const PORT = Number(process.env.PORT || 8787);
 
@@ -16,10 +17,8 @@ function sendJson(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
-    "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, X-API-Key",
-    "Access-Control-Allow-Methods":
-      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
 
   res.end(body);
@@ -82,4 +81,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🔥 KitSetups backend running on :${PORT}`);
+
+  startScanner().catch((error) => {
+    console.error(
+      "❌ Scanner startup failed:",
+      error.stack || error.message || error,
+    );
+  });
 });
