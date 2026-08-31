@@ -312,7 +312,25 @@ function determineHTFDirection(snapshot) {
 
   const w = weekly?.trend || "range";
   const d = daily?.trend || "range";
-  const h4 = fourHour?.trend || "range";
+
+  /*
+   * 4H confirmation must use the actual structural break when
+   * the structure classifier has not yet promoted trend from
+   * "range" to a directional state.
+   *
+   * Explicit trend remains authoritative. A directional BOS
+   * can confirm the new structural leg when trend is still range.
+   */
+  const h4 =
+    fourHour?.trend === "bullish" ||
+    fourHour?.trend === "bearish"
+      ? fourHour.trend
+      : fourHour?.bullishBOS && !fourHour?.bearishBOS
+        ? "bullish"
+        : fourHour?.bearishBOS && !fourHour?.bullishBOS
+          ? "bearish"
+          : "range";
+
   const h1 = oneHour?.trend || "range";
 
   /*
@@ -516,7 +534,15 @@ function determineHTFDirection(snapshot) {
    *   4H opposite/range = no confirmation
    */
   const confirmed =
-    h4 === macroBias;
+    h4 === macroBias ||
+    (
+      macroBias === "bullish" &&
+      fourHour?.bullishBOS === true
+    ) ||
+    (
+      macroBias === "bearish" &&
+      fourHour?.bearishBOS === true
+    );
 
   if (!confirmed) {
     reason.push(
@@ -549,94 +575,349 @@ function collectLiquidity(
   snapshot,
   direction
 ) {
-  const structure =
-    getStructure(
-      snapshot,
-      "30m"
-    );
-
-  const thirty =
-    getStructure(
-      snapshot,
-      "30m"
-    );
-
-  const oneHour =
-    getStructure(
-      snapshot,
-      "1h"
-    );
+  const normalized =
+    String(direction || "").toLowerCase();
 
   const levels = [];
 
   /*
-   * For LONG:
-   * sell-side liquidity is generally below price.
+   * ---------------------------------------------------------
+   * LIQUIDITY MAP
+   * ---------------------------------------------------------
    *
-   * For SHORT:
-   * buy-side liquidity is generally above price.
+   * Only consume data explicitly present in the snapshot.
+   *
+   * EXTERNAL:
+   *   1W / 1D / 4H swing liquidity
+   *
+   * INTERNAL:
+   *   1H / 30M swing liquidity
+   *
+   * PROTECTED:
+   *   Explicit protected highs/lows exposed by the
+   *   structure engine.
+   *
+   * No synthetic session levels.
+   * No invented equal highs/lows.
+   * No guessed liquidity.
    */
-  const sources = [
-    structure,
-    thirty,
-    oneHour
+
+  const timeframes = [
+    ["1w", "external"],
+    ["1d", "external"],
+    ["4h", "external"],
+    ["1h", "internal"],
+    ["30m", "internal"]
   ];
 
+  function addLevel({
+    price,
+    type,
+    side,
+    timeframe,
+    className,
+    source,
+    priority
+  }) {
+    const value =
+      finite(price);
+
+    if (value === null) {
+      return;
+    }
+
+    levels.push({
+      price: value,
+      type,
+      side,
+      timeframe,
+      liquidityClass: className,
+      className,
+      source,
+      priority
+    });
+  }
+
   for (
-    const source of sources
+    const [timeframe, className] of timeframes
   ) {
-    if (!source) continue;
+    const structure =
+      getStructure(
+        snapshot,
+        timeframe
+      );
+
+    if (!structure) {
+      continue;
+    }
+
+    const lastHigh =
+      structure.lastSwingHigh?.price ??
+      structure.lastSwingHigh;
+
+    const previousHigh =
+      structure.previousSwingHigh?.price ??
+      structure.previousSwingHigh;
+
+    const lastLow =
+      structure.lastSwingLow?.price ??
+      structure.lastSwingLow;
+
+    const previousLow =
+      structure.previousSwingLow?.price ??
+      structure.previousSwingLow;
+
+    /*
+     * Buy-side liquidity exists above highs.
+     */
 
     if (
-      direction === "bullish"
+      normalized === "bearish"
     ) {
-      const lows = [
-        source.lastSwingLow?.price,
-        source.previousSwingLow?.price,
-        source.bearishLevel
-      ];
+      addLevel({
+        price: lastHigh,
+        type: "swing_high",
+        side: "buy_side",
+        timeframe,
+        className,
+        source: `${timeframe}_${className}_last_swing_high`,
+        priority:
+          className === "external"
+            ? 3
+            : 2
+      });
 
-      for (
-        const level of lows
-      ) {
-        const price =
-          finite(level);
+      addLevel({
+        price: previousHigh,
+        type: "swing_high",
+        side: "buy_side",
+        timeframe,
+        className,
+        source: `${timeframe}_${className}_previous_swing_high`,
+        priority:
+          className === "external"
+            ? 3
+            : 1
+      });
+    }
 
-        if (
-          price !== null
-        ) {
-          levels.push(price);
-        }
-      }
+    /*
+     * Sell-side liquidity exists below lows.
+     */
+
+    if (
+      normalized === "bullish"
+    ) {
+      addLevel({
+        price: lastLow,
+        type: "swing_low",
+        side: "sell_side",
+        timeframe,
+        className,
+        source: `${timeframe}_${className}_last_swing_low`,
+        priority:
+          className === "external"
+            ? 3
+            : 2
+      });
+
+      addLevel({
+        price: previousLow,
+        type: "swing_low",
+        side: "sell_side",
+        timeframe,
+        className,
+        source: `${timeframe}_${className}_previous_swing_low`,
+        priority:
+          className === "external"
+            ? 3
+            : 1
+      });
+    }
+
+    /*
+     * Explicit protected structure.
+     *
+     * These are added only when the structure engine exposes
+     * them for this timeframe.
+     */
+
+    const protectedHigh =
+      structure.protectedHigh?.price ??
+      structure.protectedHigh;
+
+    const protectedLow =
+      structure.protectedLow?.price ??
+      structure.protectedLow;
+
+    if (
+      normalized === "bearish"
+    ) {
+      addLevel({
+        price: protectedHigh,
+        type: "protected_high",
+        side: "buy_side",
+        timeframe,
+        source: `${timeframe}_protected_high`,
+        priority: 4
+      });
     }
 
     if (
-      direction === "bearish"
+      normalized === "bullish"
     ) {
-      const highs = [
-        source.lastSwingHigh?.price,
-        source.previousSwingHigh?.price,
-        source.bullishLevel
-      ];
+      addLevel({
+        price: protectedLow,
+        type: "protected_low",
+        side: "sell_side",
+        timeframe,
+        source: `${timeframe}_protected_low`,
+        priority: 4
+      });
+    }
+  }
 
-      for (
-        const level of highs
-      ) {
-        const price =
-          finite(level);
+  /*
+   * Remove exact duplicate levels while preserving the
+   * strongest structural classification.
+   */
 
-        if (
-          price !== null
-        ) {
-          levels.push(price);
-        }
-      }
+  const deduped =
+    new Map();
+
+  for (
+    const level of levels
+  ) {
+    const key =
+      `${level.side}:${level.price}`;
+
+    const existing =
+      deduped.get(key);
+
+    if (
+      !existing ||
+      level.priority > existing.priority
+    ) {
+      deduped.set(
+        key,
+        level
+      );
     }
   }
 
   return [
-    ...new Set(levels)
+    ...deduped.values()
+  ].sort(
+    (a, b) =>
+      b.priority - a.priority
+  );
+}
+
+function collectProtectedStructure(snapshot) {
+  const result = {
+    protectedHigh: null,
+    protectedLow: null,
+
+    highSource: null,
+    lowSource: null,
+
+    highTimeframe: null,
+    lowTimeframe: null,
+
+    available: false
+  };
+
+  /*
+   * Protected structure must be explicitly exposed by the
+   * structure engine.
+   *
+   * We do NOT assume that:
+   *
+   * lastSwingHigh = protectedHigh
+   * lastSwingLow  = protectedLow
+   *
+   * A protected level is only accepted when the upstream
+   * structure engine has identified it as protected.
+   */
+
+  const timeframes = [
+    "1d",
+    "4h",
+    "1h",
+    "30m"
   ];
+
+  for (
+    const timeframe of timeframes
+  ) {
+    const structure =
+      getStructure(
+        snapshot,
+        timeframe
+      );
+
+    if (!structure) {
+      continue;
+    }
+
+    const explicitHigh =
+      finite(
+        structure.protectedHigh?.price ??
+        structure.protectedHigh
+      );
+
+    const explicitLow =
+      finite(
+        structure.protectedLow?.price ??
+        structure.protectedLow
+      );
+
+    /*
+     * Preserve the highest-timeframe explicit protected
+     * structure available.
+     */
+
+    if (
+      result.protectedHigh === null &&
+      explicitHigh !== null
+    ) {
+      result.protectedHigh =
+        explicitHigh;
+
+      result.highSource =
+        `${timeframe}_protected_high`;
+
+      result.highTimeframe =
+        timeframe;
+    }
+
+    if (
+      result.protectedLow === null &&
+      explicitLow !== null
+    ) {
+      result.protectedLow =
+        explicitLow;
+
+      result.lowSource =
+        `${timeframe}_protected_low`;
+
+      result.lowTimeframe =
+        timeframe;
+    }
+
+    if (
+      result.protectedHigh !== null &&
+      result.protectedLow !== null
+    ) {
+      break;
+    }
+  }
+
+  result.available =
+    result.protectedHigh !== null ||
+    result.protectedLow !== null;
+
+  return result;
 }
 
 /*
@@ -646,53 +927,136 @@ function collectLiquidity(
  */
 
 function detectLiquiditySweep(
-  candles = [],
+  snapshot,
   direction
 ) {
-  const closed = candles.filter(
-    candle =>
-      candle &&
-      candle.isClosed !== false
-  );
+  const candles =
+    getCandles(
+      snapshot,
+      "30m"
+    );
+
+  const closed =
+    candles.filter(
+      candle =>
+        candle &&
+        candle.isClosed !== false
+    );
 
   if (closed.length < 20) {
     return null;
   }
 
   const normalized =
-    String(direction || "").toUpperCase();
+      String(direction || "").toLowerCase();
 
-  const bullish = normalized === "LONG";
-  const bearish = normalized === "SHORT";
+    const bullish =
+      normalized === "bullish" ||
+      normalized === "long";
 
-  if (!bullish && !bearish) {
+    const bearish =
+      normalized === "bearish" ||
+      normalized === "short";
+
+    if (!bullish && !bearish) {
     return null;
   }
 
   /*
-   * Search recent execution candles.
+   * ---------------------------------------------------------
+   * STRUCTURED LIQUIDITY SWEEP
+   * ---------------------------------------------------------
+   *
+   * Do not manufacture liquidity from an arbitrary rolling
+   * candle window.
+   *
+   * The sweep must interact with a liquidity level explicitly
+   * exposed by the market structure/liquidity map.
+   */
+
+  const liquidityDirection =
+      bullish
+        ? "bullish"
+        : "bearish";
+
+    const liquidity =
+      collectLiquidity(
+        snapshot,
+        liquidityDirection
+      );
+
+    if (!Array.isArray(liquidity) || !liquidity.length) {
+    return null;
+  }
+
+  const candidates =
+    liquidity.filter(
+      level =>
+        level &&
+        finite(level.price) !== null &&
+        (
+          bullish
+            ? level.side === "sell_side"
+            : level.side === "buy_side"
+        )
+    );
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  /*
+   * Prefer structurally important liquidity:
+   *
+   * protected > external > internal.
+   */
+
+  const priorityOrder =
+    [...candidates].sort(
+      (a, b) =>
+        (b.priority ?? 0) -
+        (a.priority ?? 0)
+    );
+
+  /*
+   * Search recent closed 30M candles.
+   *
+   * A valid sweep requires:
    *
    * LONG:
-   *   price must raid a prior swing low and close back above it.
+   *   low trades below sell-side liquidity
+   *   AND candle closes back above the level.
    *
    * SHORT:
-   *   price must raid a prior swing high and close back below it.
+   *   high trades above buy-side liquidity
+   *   AND candle closes back below the level.
    */
+
   const start =
     Math.max(
-      6,
+      1,
       closed.length - 25
     );
 
   const end =
     closed.length - 1;
 
-  for (let i = end; i >= start; i--) {
-    const candle = closed[i];
+  for (
+    let i = end;
+    i >= start;
+    i--
+  ) {
+    const candle =
+      closed[i];
 
-    const high = finite(candle?.high);
-    const low = finite(candle?.low);
-    const close = finite(candle?.close);
+    const high =
+      finite(candle?.high);
+
+    const low =
+      finite(candle?.low);
+
+    const close =
+      finite(candle?.close);
 
     if (
       high === null ||
@@ -702,82 +1066,125 @@ function detectLiquiditySweep(
       continue;
     }
 
-    const lookbackStart =
-      Math.max(2, i - 6);
-
-    const previous =
-      closed.slice(
-        lookbackStart,
-        i
-      );
-
-    if (previous.length < 3) {
-      continue;
-    }
-
-    const highs =
-      previous
-        .map(c => finite(c?.high))
-        .filter(v => v !== null);
-
-    const lows =
-      previous
-        .map(c => finite(c?.low))
-        .filter(v => v !== null);
-
-    if (
-      !highs.length ||
-      !lows.length
-    ) {
-      continue;
-    }
-
-    const liquidityHigh =
-      Math.max(...highs);
-
-    const liquidityLow =
-      Math.min(...lows);
-
     /*
-     * LONG = sell-side liquidity sweep.
+     * Test the strongest available liquidity first.
      */
-    if (
-      bullish &&
-      low < liquidityLow &&
-      close > liquidityLow
-    ) {
-      return {
-        detected: true,
-        direction: "bullish",
-        type: "sell_side_sweep",
-        level: liquidityLow,
-        candle: candle.openTime,
-        index: i,
-        high,
-        low,
-        close
-      };
-    }
 
-    /*
-     * SHORT = buy-side liquidity sweep.
-     */
-    if (
-      bearish &&
-      high > liquidityHigh &&
-      close < liquidityHigh
+    for (
+      const level of priorityOrder
     ) {
-      return {
-        detected: true,
-        direction: "bearish",
-        type: "buy_side_sweep",
-        level: liquidityHigh,
-        candle: candle.openTime,
-        index: i,
-        high,
-        low,
-        close
-      };
+      const liquidityPrice =
+        finite(level.price);
+
+      if (
+        liquidityPrice === null
+      ) {
+        continue;
+      }
+
+      if (
+        bullish &&
+        low < liquidityPrice &&
+        close > liquidityPrice
+      ) {
+        return {
+          detected: true,
+
+          direction: "bullish",
+
+          type:
+            "sell_side_sweep",
+
+          liquidityType:
+            level.type,
+
+          liquidityClass:
+            level.type === "protected_low"
+              ? "protected"
+              : level.priority >= 3
+                ? "external"
+                : "internal",
+
+          liquiditySide:
+            level.side,
+
+          liquidityTimeframe:
+            level.timeframe,
+
+          liquiditySource:
+            level.source,
+
+          level:
+            liquidityPrice,
+
+          candle:
+            candle.openTime,
+
+          index: i,
+
+          high,
+          low,
+          close,
+
+          penetration:
+            liquidityPrice - low,
+
+          reclaimed:
+            close > liquidityPrice
+        };
+      }
+
+      if (
+        bearish &&
+        high > liquidityPrice &&
+        close < liquidityPrice
+      ) {
+        return {
+          detected: true,
+
+          direction: "bearish",
+
+          type:
+            "buy_side_sweep",
+
+          liquidityType:
+            level.type,
+
+          liquidityClass:
+            level.type === "protected_high"
+              ? "protected"
+              : level.priority >= 3
+                ? "external"
+                : "internal",
+
+          liquiditySide:
+            level.side,
+
+          liquidityTimeframe:
+            level.timeframe,
+
+          liquiditySource:
+            level.source,
+
+          level:
+            liquidityPrice,
+
+          candle:
+            candle.openTime,
+
+          index: i,
+
+          high,
+          low,
+          close,
+
+          penetration:
+            high - liquidityPrice,
+
+          reclaimed:
+            close < liquidityPrice
+        };
+      }
     }
   }
 
@@ -803,12 +1210,17 @@ function detectDisplacement(
   }
 
   const normalized =
-    String(direction || "").toUpperCase();
+      String(direction || "").toLowerCase();
 
-  const bullish = normalized === "LONG";
-  const bearish = normalized === "SHORT";
+    const bullish =
+      normalized === "bullish" ||
+      normalized === "long";
 
-  if (!bullish && !bearish) {
+    const bearish =
+      normalized === "bearish" ||
+      normalized === "short";
+
+    if (!bullish && !bearish) {
     return null;
   }
 
@@ -824,10 +1236,19 @@ function detectDisplacement(
   }
 
   /*
-   * Displacement MUST happen after the sweep.
+   * Displacement must occur AFTER the liquidity sweep.
    *
-   * Search only the next 6 closed candles.
+   * We evaluate only the next six closed candles.
+   *
+   * Measurements are based entirely on OHLC:
+   *
+   * - candle direction
+   * - body/range ratio
+   * - range relative to preceding average range
+   * - close location inside candle range
+   * - continuation across two candles
    */
+
   const start =
     sweepIndex + 1;
 
@@ -840,9 +1261,17 @@ function detectDisplacement(
   for (let i = start; i <= end; i++) {
     const candle = closed[i];
 
-    const high = finite(candle?.high);
-    const low = finite(candle?.low);
-    const close = finite(candle?.close);
+    const high =
+      finite(candle?.high);
+
+    const low =
+      finite(candle?.low);
+
+    const open =
+      finite(candle?.open);
+
+    const close =
+      finite(candle?.close);
 
     const range =
       candleRange(candle);
@@ -853,6 +1282,7 @@ function detectDisplacement(
     if (
       high === null ||
       low === null ||
+      open === null ||
       close === null ||
       range === null ||
       body === null ||
@@ -861,8 +1291,26 @@ function detectDisplacement(
       continue;
     }
 
+    const actualDirection =
+      candleDirection(candle);
+
+    const directionMatches =
+      (
+        bullish &&
+        actualDirection === "bullish"
+      ) ||
+      (
+        bearish &&
+        actualDirection === "bearish"
+      );
+
+    if (!directionMatches) {
+      continue;
+    }
+
     /*
-     * Average range BEFORE the displacement candle.
+     * Average range of candles BEFORE
+     * the candidate displacement candle.
      */
     const ranges = [];
 
@@ -886,7 +1334,7 @@ function detectDisplacement(
       continue;
     }
 
-    const average =
+    const averageRange =
       ranges.reduce(
         (sum, value) =>
           sum + value,
@@ -894,26 +1342,9 @@ function detectDisplacement(
       ) / ranges.length;
 
     if (
-      !Number.isFinite(average) ||
-      average <= 0
+      !Number.isFinite(averageRange) ||
+      averageRange <= 0
     ) {
-      continue;
-    }
-
-    const actualDirection =
-      candleDirection(candle);
-
-    const directionMatches =
-      (
-        bullish &&
-        actualDirection === "bullish"
-      ) ||
-      (
-        bearish &&
-        actualDirection === "bearish"
-      );
-
-    if (!directionMatches) {
       continue;
     }
 
@@ -921,22 +1352,58 @@ function detectDisplacement(
       body / range;
 
     const rangeMultiple =
-      range / average;
+      range / averageRange;
 
     /*
-     * Strong single-candle displacement.
-     */
-    const strongSingle =
-      bodyRatio >= 0.55 &&
-      rangeMultiple >= 1.20;
-
-    /*
-     * Two-candle displacement.
+     * Close location:
      *
-     * This allows a strong impulsive move to develop over
-     * two candles without accepting weak isolated candles.
+     * LONG:
+     * close near the candle high = stronger
+     *
+     * SHORT:
+     * close near the candle low = stronger
      */
-    let strongTwoCandle = false;
+    const closeLocation =
+      bullish
+        ? (close - low) / range
+        : (high - close) / range;
+
+    /*
+     * Deterministic quality components.
+     *
+     * These are measurements, not claims of prediction.
+     */
+    const bodyScore =
+      Math.min(
+        100,
+        Math.max(
+          0,
+          (bodyRatio / 0.80) * 100
+        )
+      );
+
+    const rangeScore =
+      Math.min(
+        100,
+        Math.max(
+          0,
+          (rangeMultiple / 2.00) * 100
+        )
+      );
+
+    const closeScore =
+      Math.min(
+        100,
+        Math.max(
+          0,
+          closeLocation * 100
+        )
+      );
+
+    /*
+     * Two-candle continuation measurement.
+     */
+    let continuation = null;
 
     if (i > start) {
       const previous =
@@ -957,18 +1424,42 @@ function detectDisplacement(
         previousBody !== null &&
         previousRange > 0
       ) {
-        const combinedRange =
-          previousRange + range;
+        const previousBodyRatio =
+          previousBody /
+          previousRange;
 
-        const combinedBody =
-          previousBody + body;
-
-        strongTwoCandle =
-          combinedRange > 0 &&
-          combinedBody / combinedRange >= 0.55 &&
-          combinedRange / average >= 1.50;
+        continuation = {
+          detected: true,
+          bodyRatio:
+            previousBodyRatio,
+          range:
+            previousRange
+        };
       }
     }
+
+    /*
+     * Strong single-candle displacement.
+     *
+     * Thresholds are deliberately explicit and
+     * reproducible from the candle data.
+     */
+    const strongSingle =
+      bodyRatio >= 0.55 &&
+      rangeMultiple >= 1.20 &&
+      closeLocation >= 0.65;
+
+    /*
+     * Two-candle displacement:
+     * both candles must move in the same direction,
+     * while the current candle must still demonstrate
+     * meaningful expansion.
+     */
+    const strongTwoCandle =
+      Boolean(continuation?.detected) &&
+      continuation.bodyRatio >= 0.50 &&
+      rangeMultiple >= 1.10 &&
+      closeLocation >= 0.60;
 
     if (
       !strongSingle &&
@@ -977,28 +1468,14 @@ function detectDisplacement(
       continue;
     }
 
-    /*
-     * The displacement must actually move away from
-     * the swept liquidity.
-     */
-    const sweptLevel =
-      finite(sweep.level);
-
-    if (sweptLevel !== null) {
-      if (
-        bullish &&
-        close <= sweptLevel
-      ) {
-        continue;
-      }
-
-      if (
-        bearish &&
-        close >= sweptLevel
-      ) {
-        continue;
-      }
-    }
+    const quality =
+      Math.round(
+        (
+          bodyScore * 0.40 +
+          rangeScore * 0.35 +
+          closeScore * 0.25
+        ) * 100
+      ) / 100;
 
     return {
       detected: true,
@@ -1013,31 +1490,52 @@ function detectDisplacement(
 
       index: i,
 
-      sweepCandle:
-        sweep.candle,
-
       sweepIndex,
-
-      type:
-        strongTwoCandle
-          ? "two_candle_displacement"
-          : "single_candle_displacement",
-
-      bodyRatio:
-        round(
-          bodyRatio,
-          3
-        ),
-
-      rangeMultiple:
-        round(
-          rangeMultiple,
-          2
-        ),
 
       high,
       low,
-      close
+      open,
+      close,
+
+      range,
+
+      body,
+
+      bodyRatio:
+        Math.round(
+          bodyRatio * 10000
+        ) / 10000,
+
+      averageRange:
+        Math.round(
+          averageRange * 100
+        ) / 100,
+
+      rangeMultiple:
+        Math.round(
+          rangeMultiple * 10000
+        ) / 10000,
+
+      closeLocation:
+        Math.round(
+          closeLocation * 10000
+        ) / 10000,
+
+      continuation,
+
+      model:
+        strongSingle
+          ? "single_candle"
+          : "two_candle",
+
+      qualityScore:
+        Math.min(
+          100,
+          Math.max(
+            0,
+            quality
+          )
+        )
     };
   }
 
@@ -1340,614 +1838,388 @@ function analyzeExecutionPOI(
   displacement = null,
   executionBreak = null
 ) {
-  /*
-   * ---------------------------------------------------------
-   * EXECUTION POI
-   * ---------------------------------------------------------
-   *
-   * The POI is NOT selected independently from the market.
-   *
-   * The chain is:
-   *
-   *   LIQUIDITY SWEEP
-   *        ↓
-   *   DISPLACEMENT
-   *        ↓
-   *   EXECUTION POI
-   *        ↓
-   *   BOS
-   *        ↓
-   *   POI RETEST
-   *
-   * Only a POI directly produced by the displacement move
-   * is allowed to become the execution POI.
-   */
+  const normalized =
+    String(direction || "").toLowerCase();
 
-  const empty = {
-    available: false,
-    nearest: null,
-    insidePOI: false,
-    retest: false,
-    linked: false,
-    executionPOI: null
-  };
+  const isLong =
+    normalized === "bullish" ||
+    normalized === "long";
 
-  if (
-    !displacement?.detected ||
-    !executionBreak?.detected
-  ) {
-    return empty;
-  }
+  const isShort =
+    normalized === "bearish" ||
+    normalized === "short";
 
-  const candles =
-    getCandles(snapshot, "30m");
-
-  if (!Array.isArray(candles) || candles.length < 5) {
-    return empty;
-  }
-
-  const closedCandles =
-    candles.filter(
-      candle =>
-        candle &&
-        candle.isClosed !== false
-    );
-
-  if (closedCandles.length < 5) {
-    return empty;
-  }
-
-  const displacementTime =
-    toTimestamp(displacement.candle);
-
-  const bosTime =
-    toTimestamp(executionBreak.candle);
-
-  if (
-    displacementTime === null ||
-    bosTime === null ||
-    bosTime <= displacementTime
-  ) {
-    return empty;
-  }
-
-  const displacementIndex =
-    closedCandles.findIndex(
-      candle =>
-        toTimestamp(candle.openTime) ===
-        displacementTime
-    );
-
-  if (
-    displacementIndex < 2 ||
-    displacementIndex >= closedCandles.length
-  ) {
-    return empty;
-  }
-
-  const normalizedDirection =
-    String(direction || "")
-      .toLowerCase();
-
-  const bullish =
-    normalizedDirection === "bullish" ||
-    normalizedDirection === "long";
-
-  const bearish =
-    normalizedDirection === "bearish" ||
-    normalizedDirection === "short";
-
-  if (!bullish && !bearish) {
-    return empty;
-  }
-
-  const displacementCandle =
-    closedCandles[displacementIndex];
-
-  let originCandle = null;
-
-  for (
-    let i = displacementIndex - 1;
-    i >= Math.max(0, displacementIndex - 5);
-    i--
-  ) {
-    const candle = closedCandles[i];
-
-    const open = finite(candle?.open);
-    const close = finite(candle?.close);
-
-    if (
-      open === null ||
-      close === null
-    ) {
-      continue;
-    }
-
-    if (
-      bullish &&
-      close < open
-    ) {
-      originCandle = candle;
-      break;
-    }
-
-    if (
-      bearish &&
-      close > open
-    ) {
-      originCandle = candle;
-      break;
-    }
-  }
-
-  const twoBackCandle =
-    closedCandles[displacementIndex - 2];
-
-  const displacementOpen =
-    finite(displacementCandle?.open);
-
-  const displacementHigh =
-    finite(displacementCandle?.high);
-
-  const displacementLow =
-    finite(displacementCandle?.low);
-
-  const displacementClose =
-    finite(displacementCandle?.close);
-
-  const originOpen =
-    finite(originCandle?.open);
-
-  const originHigh =
-    finite(originCandle?.high);
-
-  const originLow =
-    finite(originCandle?.low);
-
-  const originClose =
-    finite(originCandle?.close);
-
-  const twoBackHigh =
-    finite(twoBackCandle?.high);
-
-  const twoBackLow =
-    finite(twoBackCandle?.low);
-
-  if (
-    displacementHigh === null ||
-    displacementLow === null ||
-    displacementClose === null ||
-    originHigh === null ||
-    originLow === null ||
-    originClose === null ||
-    twoBackHigh === null ||
-    twoBackLow === null
-  ) {
-    return empty;
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * BUILD POIs FROM THE ACTUAL DISPLACEMENT
-   * ---------------------------------------------------------
-   */
-
-  const candidates = [];
-
-  /*
-   * ---------------------------------------------------------
-   * ORDER BLOCK
-   * ---------------------------------------------------------
-   *
-   * The candle immediately preceding displacement must be
-   * opposite in direction.
-   *
-   * Bullish:
-   *   bearish origin candle → bullish displacement
-   *
-   * Bearish:
-   *   bullish origin candle → bearish displacement
-   */
-
-  const originBearish =
-    originClose < originOpen;
-
-  const originBullish =
-    originClose > originOpen;
-
-  if (
-    bullish &&
-    originBearish
-  ) {
-    candidates.push({
-      type: "bullish_order_block",
-      direction: "bullish",
-
-      low: originLow,
-      high: originHigh,
-
-      originCandle:
-        originCandle.openTime,
-
-      confirmationCandle:
-        displacementCandle.openTime,
-
-      displacementCandle:
-        displacementCandle.openTime,
-
-      displacementIndex,
-
-      source: "execution_displacement",
-
-      strength: 2
-    });
-  }
-
-  if (
-    bearish &&
-    originBullish
-  ) {
-    candidates.push({
-      type: "bearish_order_block",
-      direction: "bearish",
-
-      low: originLow,
-      high: originHigh,
-
-      originCandle:
-        originCandle.openTime,
-
-      confirmationCandle:
-        displacementCandle.openTime,
-
-      displacementCandle:
-        displacementCandle.openTime,
-
-      displacementIndex,
-
-      source: "execution_displacement",
-
-      strength: 2
-    });
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * FAIR VALUE GAP
-   * ---------------------------------------------------------
-   *
-   * The FVG must be created by the displacement candle.
-   *
-   * Bullish:
-   *   displacement low > candle[-2] high
-   *
-   * Bearish:
-   *   displacement high < candle[-2] low
-   */
-
-  if (
-    bullish &&
-    displacementLow > twoBackHigh
-  ) {
-    candidates.push({
-      type: "bullish_fvg",
-      direction: "bullish",
-
-      low: twoBackHigh,
-      high: displacementLow,
-
-      originCandle:
-        closedCandles[displacementIndex - 2]?.openTime ?? null,
-
-      confirmationCandle:
-        displacementCandle.openTime,
-
-      displacementCandle:
-        displacementCandle.openTime,
-
-      displacementIndex,
-
-      source: "execution_displacement",
-
-      strength: 1
-    });
-  }
-
-  if (
-    bearish &&
-    displacementHigh < twoBackLow
-  ) {
-    candidates.push({
-      type: "bearish_fvg",
-      direction: "bearish",
-
-      low: displacementHigh,
-      high: twoBackLow,
-
-      originCandle:
-        closedCandles[displacementIndex - 2]?.openTime ?? null,
-
-      confirmationCandle:
-        displacementCandle.openTime,
-
-      displacementCandle:
-        displacementCandle.openTime,
-
-      displacementIndex,
-
-      source: "execution_displacement",
-
-      strength: 1
-    });
-  }
-
-  /*
-   * No POI was actually created by the displacement.
-   */
-  if (!candidates.length) {
-    console.log(
-      [
-        "",
-        "🔍 NO POI DEBUG",
-        `Direction: ${direction}`,
-        `Displacement: ${displacementCandle.openTime}`,
-        `Displacement open: ${displacementOpen}`,
-        `Displacement high: ${displacementHigh}`,
-        `Displacement low: ${displacementLow}`,
-        `Displacement close: ${displacementClose}`,
-        `Origin: ${originCandle.openTime}`,
-        `Origin open: ${originOpen}`,
-        `Origin high: ${originHigh}`,
-        `Origin low: ${originLow}`,
-        `Origin close: ${originClose}`,
-        `Origin bearish: ${originBearish}`,
-        `Origin bullish: ${originBullish}`,
-        `Two-back high: ${twoBackHigh}`,
-        `Two-back low: ${twoBackLow}`,
-        `Bullish OB condition: ${bullish && originBearish}`,
-        `Bearish OB condition: ${bearish && originBullish}`,
-        `Bullish FVG condition: ${bullish && displacementLow > twoBackHigh}`,
-        `Bearish FVG condition: ${bearish && displacementHigh < twoBackLow}`,
-        `Candidates: ${candidates.length}`
-      ].join("\n")
-    );
-
+  if (!isLong && !isShort) {
     return {
-      available: false,
       nearest: null,
-      insidePOI: false,
       retest: false,
-      linked: false,
-      executionPOI: null
+      candidates: [],
+      reason: ["Invalid POI direction"]
     };
   }
-
-  /*
-   * Prefer Order Block over FVG.
-   *
-   * If several candidates exist, prefer the one closest
-   * to the displacement candle.
-   */
-  candidates.sort(
-    (a, b) => {
-      if (a.strength !== b.strength) {
-        return b.strength - a.strength;
-      }
-
-      return (
-        (b.displacementIndex ?? 0) -
-        (a.displacementIndex ?? 0)
-      );
-    }
-  );
-
-  const poi =
-    candidates[0] || null;
-
-  if (!poi) {
-    return empty;
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * POI GEOMETRY VALIDATION
-   * ---------------------------------------------------------
-   */
-
-  const poiLow =
-    finite(poi.low);
-
-  const poiHigh =
-    finite(poi.high);
-
-  if (
-    poiLow === null ||
-    poiHigh === null ||
-    poiLow >= poiHigh
-  ) {
-    return empty;
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * PRICE INSIDE POI
-   * ---------------------------------------------------------
-   */
 
   const currentPrice =
     finite(price);
 
-  const inside =
-    currentPrice !== null &&
-    bosTime !== null &&
-    currentPrice >= poiLow &&
-    currentPrice <= poiHigh;
-
   /*
-   * ---------------------------------------------------------
-   * POST-BOS RETEST
-   * ---------------------------------------------------------
-   *
-   * A candle before BOS can NEVER count.
-   *
-   * A candle must:
-   *
-   *   1. occur after BOS
-   *   2. overlap the execution POI
+   * POIs come from the existing POI engine.
+   * We do not manufacture FVGs or order blocks here.
    */
 
+  let candidates = [];
+
+  try {
+    const result =
+      poiEngine?.analyzePOIs
+        ? poiEngine.analyzePOIs(snapshot)
+        : null;
+
+    if (Array.isArray(result)) {
+      candidates = result;
+    } else if (
+      Array.isArray(result?.pois)
+    ) {
+      candidates = result.pois;
+    }
+  } catch (error) {
+    candidates = [];
+  }
+
   /*
-   * ---------------------------------------------------------
-   * POST-BOS POI RETEST
-   * ---------------------------------------------------------
-   *
-   * A historical retest must:
-   *
-   *   1. occur after BOS
-   *   2. be a closed candle
-   *   3. overlap the execution POI
-   *
-   * Current price inside the POI is handled separately.
+   * Fallback to POIs already exposed by the snapshot.
    */
 
-  const postBOSCandles =
-    closedCandles.filter(
-      candle => {
-        const candleTime =
-          toTimestamp(candle.openTime);
+  if (!candidates.length) {
+    const snapshotPOIs =
+      snapshot?.pois ||
+      snapshot?.POIs ||
+      snapshot?.pointsOfInterest ||
+      [];
 
-        return (
-          candleTime !== null &&
-          candleTime > bosTime
-        );
-      }
-    );
+    if (Array.isArray(snapshotPOIs)) {
+      candidates = snapshotPOIs;
+    }
+  }
 
-  const recentRetestCandle =
-    postBOSCandles
-      .slice(-30)
-      .some(
-        candle => {
-          const high =
-            finite(candle.high);
+  const filtered =
+    candidates
+      .map((poi) => {
+        const low =
+          finite(
+            poi?.low ??
+            poi?.zoneLow ??
+            poi?.bottom
+          );
 
-          const low =
-            finite(candle.low);
+        const high =
+          finite(
+            poi?.high ??
+            poi?.zoneHigh ??
+            poi?.top
+          );
 
-          if (
-            high === null ||
-            low === null
-          ) {
-            return false;
-          }
+        if (
+          low === null ||
+          high === null ||
+          low >= high
+        ) {
+          return null;
+        }
 
-          return (
-            high >= poiLow &&
-            low <= poiHigh
+        const poiDirection =
+          String(
+            poi?.direction ??
+            poi?.bias ??
+            ""
+          ).toLowerCase();
+
+        const directionMatches =
+          (
+            isLong &&
+            (
+              poiDirection === "bullish" ||
+              poiDirection === "long"
+            )
+          ) ||
+          (
+            isShort &&
+            (
+              poiDirection === "bearish" ||
+              poiDirection === "short"
+            )
+          );
+
+        if (!directionMatches) {
+          return null;
+        }
+
+        const midpoint =
+          (low + high) / 2;
+
+        const distance =
+          currentPrice === null
+            ? null
+            : Math.abs(
+                currentPrice - midpoint
+              );
+
+        /*
+         * Preserve factual POI state supplied by the engine.
+         * Unknown fields remain unknown instead of being guessed.
+         */
+
+        const freshness =
+          poi?.freshness ??
+          null;
+
+        const touched =
+          poi?.touched ??
+          null;
+
+        const mitigated =
+          poi?.mitigated ??
+          null;
+
+        const invalidated =
+          poi?.invalidated ??
+          null;
+
+        const hasFVG =
+          poi?.hasFVG ??
+          (
+            String(
+              poi?.type || ""
+            ).toLowerCase() === "fvg"
+          );
+
+        const hasOB =
+          poi?.hasOB ??
+          (
+            String(
+              poi?.type || ""
+            ).toLowerCase().includes("ob")
+          );
+
+        const displacementQuality =
+          finite(
+            poi?.displacementQuality
+          );
+
+        const liquidityRelation =
+          poi?.liquidityRelation ??
+          null;
+
+        const structureRelation =
+          poi?.structureRelation ??
+          null;
+
+        const premiumDiscount =
+          poi?.premiumDiscount ??
+          null;
+
+        /*
+         * Quality is evidence-based.
+         *
+         * Only explicit facts receive points.
+         * Unknown data receives zero.
+         */
+
+        let qualityScore = 0;
+
+        if (
+          freshness === true ||
+          freshness === "fresh"
+        ) {
+          qualityScore += 20;
+        }
+
+        if (
+          displacementQuality !== null
+        ) {
+          qualityScore += Math.min(
+            20,
+            Math.max(
+              0,
+              displacementQuality * 0.2
+            )
           );
         }
+
+        if (
+          liquidityRelation
+        ) {
+          qualityScore += 20;
+        }
+
+        if (
+          structureRelation
+        ) {
+          qualityScore += 20;
+        }
+
+        if (
+          hasFVG === true
+        ) {
+          qualityScore += 10;
+        }
+
+        if (
+          hasOB === true
+        ) {
+          qualityScore += 10;
+        }
+
+        if (
+          invalidated === true ||
+          mitigated === true
+        ) {
+          qualityScore = 0;
+        }
+
+        qualityScore =
+          Math.round(
+            Math.min(
+              100,
+              Math.max(
+                0,
+                qualityScore
+              )
+            ) * 100
+          ) / 100;
+
+        const inside =
+          currentPrice !== null &&
+          currentPrice >= low &&
+          currentPrice <= high;
+
+        return {
+          ...poi,
+
+          direction:
+            poi?.direction ??
+            normalized,
+
+          low,
+          high,
+          midpoint,
+
+          timeframe:
+            poi?.timeframe ??
+            null,
+
+          freshness,
+          displacementQuality,
+          liquidityRelation,
+          structureRelation,
+
+          hasFVG,
+          hasOB,
+
+          hasConfluence:
+            Boolean(
+              liquidityRelation &&
+              structureRelation
+            ),
+
+          touched,
+          mitigated,
+          invalidated,
+
+          distanceFromPrice:
+            distance,
+
+          premiumDiscount,
+
+          qualityScore,
+
+          inside
+        };
+      })
+      .filter(Boolean)
+      .filter(
+        poi =>
+          poi.invalidated !== true
       );
 
   /*
-   * Current price inside the POI after BOS is a live retest.
+   * Nearest POI means nearest valid directional POI.
+   * No synthetic candidate is created.
    */
-  const retest =
-    inside ||
-    recentRetestCandle;
+
+  filtered.sort(
+    (a, b) => {
+      const ad =
+        a.distanceFromPrice;
+
+      const bd =
+        b.distanceFromPrice;
+
+      if (
+        ad === null &&
+        bd === null
+      ) {
+        return (
+          b.qualityScore -
+          a.qualityScore
+        );
+      }
+
+      if (ad === null) return 1;
+      if (bd === null) return -1;
+
+      if (ad !== bd) {
+        return ad - bd;
+      }
+
+      return (
+        b.qualityScore -
+        a.qualityScore
+      );
+    }
+  );
+
+  const nearest =
+    filtered[0] || null;
 
   /*
-   * ---------------------------------------------------------
-   * DIAGNOSTIC
-   * ---------------------------------------------------------
+   * Retest requires actual price location inside the POI.
+   * We do not call proximity a retest.
    */
 
-  if (!retest) {
-    const lastClosed =
-      closedCandles[
-        closedCandles.length - 1
-      ];
-
-    const postBOSHighs =
-      postBOSCandles
-        .map(candle => finite(candle.high))
-        .filter(value => value !== null);
-
-    const postBOSLows =
-      postBOSCandles
-        .map(candle => finite(candle.low))
-        .filter(value => value !== null);
-
-    const highestPostBOS =
-      postBOSHighs.length
-        ? Math.max(...postBOSHighs)
-        : null;
-
-    const lowestPostBOS =
-      postBOSLows.length
-        ? Math.min(...postBOSLows)
-        : null;
-
-    console.log(
-      [
-        "",
-        "🔎 EXECUTION POI RETEST DEBUG",
-        `Direction: ${direction}`,
-        `POI type: ${poi.type}`,
-        `POI low: ${poiLow}`,
-        `POI high: ${poiHigh}`,
-        `Price: ${currentPrice}`,
-        `Inside POI: ${inside}`,
-        `Candle retest: ${recentRetestCandle}`,
-        `Post-BOS closed candles: ${postBOSCandles.length}`,
-        `Post-BOS highest: ${highestPostBOS ?? "N/A"}`,
-        `Post-BOS lowest: ${lowestPostBOS ?? "N/A"}`,
-        `Displacement: ${
-          displacementCandle.openTime
-        }`,
-        `BOS: ${
-          executionBreak.candle
-        }`,
-        `Last closed candle: ${
-          lastClosed?.openTime ?? "unknown"
-        }`,
-        `POI origin: ${
-          poi.originCandle ?? "unknown"
-        }`
-      ].join("\n")
+  const retest =
+    Boolean(
+      nearest?.inside
     );
-  }
 
   return {
-    available: true,
-
-    nearest: poi,
-
-    insidePOI:
-      inside,
-
+    nearest,
     retest,
+    candidates: filtered,
 
-    linked: true,
+    displacementLinked:
+      Boolean(
+        displacement?.detected
+      ),
 
-    executionPOI: poi,
+    structureLinked:
+      Boolean(
+        executionBreak?.detected
+      ),
 
-    candidates,
-
-    displacement: {
-      candle:
-        displacementCandle.openTime,
-      index:
-        displacementIndex
-    },
-
-    bos: {
-      candle:
-        executionBreak.candle,
-      index:
-        executionBreak.index ?? null,
-      level:
-        executionBreak.level ?? null
-    }
+    reason:
+      nearest
+        ? [
+            `Directional POI found on ${
+              nearest.timeframe || "unknown"
+            } timeframe`,
+            `POI quality ${nearest.qualityScore}/100`,
+            retest
+              ? "Current price is inside POI"
+              : "Current price has not retested POI"
+          ]
+        : [
+            "No valid directional POI found"
+          ]
   };
 }
 
@@ -1956,203 +2228,726 @@ function evaluateExecution(
   direction,
   price
 ) {
-  const candles =
-    getCandles(
-      snapshot,
-      "15m"
-    );
+  const normalizedDirection =
+    String(direction || "").toLowerCase();
 
-  if (candles.length < 30) {
+  const isLong =
+    normalizedDirection === "bullish" ||
+    normalizedDirection === "long";
+
+  const isShort =
+    normalizedDirection === "bearish" ||
+    normalizedDirection === "short";
+
+  const executionDirection =
+    isLong
+      ? "LONG"
+      : isShort
+        ? "SHORT"
+        : null;
+
+  if (!executionDirection) {
     return {
       qualified: false,
-      status: "INSUFFICIENT_EXECUTION_DATA",
+      armed: false,
+      status: "NO_TRADE",
       score: 0,
-      required: 5,
-      checks: []
+      normalizedScore: 0,
+      hardGates: {
+        validDirection: false
+      },
+      checks: [],
+      reasons: [
+        "Invalid execution direction"
+      ]
     };
   }
 
-  const executionDirection =
-    direction === "bullish"
-      ? "LONG"
-      : "SHORT";
+  /*
+   * ---------------------------------------------------------
+   * MARKET CONTEXT
+   * ---------------------------------------------------------
+   */
+
+  const context =
+    determineHTFDirection(
+      snapshot
+    );
+
+  const macroBias =
+    String(
+      context?.macroBias ||
+      context?.direction ||
+      "neutral"
+    ).toLowerCase();
 
   /*
-   * Linked execution chain:
+   * ---------------------------------------------------------
+   * SETUP CLASSIFICATION
    *
-   * SWEEP
-   *   ↓
-   * DISPLACEMENT AFTER SWEEP
-   *   ↓
-   * BOS AFTER DISPLACEMENT
-   *   ↓
-   * POI FROM EXECUTION MOVE
-   *   ↓
-   * RETEST / PRICE INSIDE POI
+   * We do NOT require every timeframe to agree.
+   *
+   * Continuation:
+   *   macro direction and 4H structure agree.
+   *
+   * Pullback:
+   *   macro direction exists but 4H is temporarily opposite.
+   *
+   * Reversal:
+   *   daily context is transitioning against weekly context.
+   *
+   * Countertrend:
+   *   execution direction is opposite the macro narrative.
+   * ---------------------------------------------------------
    */
+
+  let setupType =
+    "UNCLASSIFIED";
+
+  if (
+    context?.reversalWatch === true
+  ) {
+    setupType =
+      "REVERSAL";
+  } else if (
+    macroBias === normalizedDirection &&
+    context?.fourHour === normalizedDirection
+  ) {
+    setupType =
+      "CONTINUATION";
+  } else if (
+    macroBias === normalizedDirection
+  ) {
+    setupType =
+      "PULLBACK";
+  } else if (
+    macroBias !== "neutral"
+  ) {
+    setupType =
+      "COUNTERTREND";
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * STRUCTURED LIQUIDITY
+   * ---------------------------------------------------------
+   */
+
+  const liquidity =
+    collectLiquidity(
+      snapshot,
+      normalizedDirection
+    );
+
+  const protectedStructure =
+    collectProtectedStructure(
+      snapshot
+    );
+
+  const liquidityAvailable =
+    Array.isArray(liquidity) &&
+    liquidity.length > 0;
+
+  /*
+   * ---------------------------------------------------------
+   * EXECUTION CHAIN
+   *
+   * Liquidity
+   *   ↓
+   * Sweep
+   *   ↓
+   * Displacement
+   *   ↓
+   * BOS / CHoCH
+   *   ↓
+   * POI
+   *   ↓
+   * Retest
+   * ---------------------------------------------------------
+   */
+
   const sweep =
     detectLiquiditySweep(
-      candles,
+      snapshot,
       executionDirection
     );
 
   const displacement =
     detectDisplacement(
-      candles,
+      getCandles(
+        snapshot,
+        "30m"
+      ),
       executionDirection,
       sweep
     );
 
   const executionBreak =
     detectExecutionBreak(
-      candles,
+      getCandles(
+        snapshot,
+        "30m"
+      ),
       executionDirection,
       displacement
     );
 
-  /*
-   * ---------------------------------------------------------
-   * BOS DEBUG
-   * ---------------------------------------------------------
-   *
-   * Diagnostic only. Do not change execution logic here.
-   */
-  if (executionBreak?.detected) {
-    console.log("\n🔎 BOS DEBUG");
-
-    console.log(
-      `Direction: ${executionBreak.direction}`
-    );
-
-    console.log(
-      `BOS level: ${executionBreak.level}`
-    );
-
-    console.log(
-      `BOS candle: ${
-        executionBreak.candle
-          ? new Date(
-              toTimestamp(executionBreak.candle)
-            ).toISOString()
-          : "invalid"
-      }`
-    );
-
-    console.log(
-      `BOS index: ${executionBreak.index}`
-    );
-
-    console.log(
-      `Displacement index: ${
-        executionBreak.displacementIndex
-      }`
-    );
-
-    console.log(
-      `Displacement candle: ${
-        displacement?.candle
-          ? new Date(
-              toTimestamp(displacement.candle)
-            ).toISOString()
-          : "invalid"
-      }`
-    );
-
-    console.log(
-      `Swing index: ${
-        executionBreak.swingIndex
-      }`
-    );
-
-    console.log(
-      `Swing level: ${
-        executionBreak.level
-      }`
-    );
-  }
-
   const poi =
     analyzeExecutionPOI(
       snapshot,
-      direction,
+      normalizedDirection,
       price,
       displacement,
       executionBreak
     );
 
-  const checks = [
-    {
-      name: "liquidity_sweep",
-      passed:
-        Boolean(sweep?.detected)
-    },
-    {
-      name: "displacement_after_sweep",
-      passed:
-        Boolean(displacement?.detected)
-    },
-    {
-      name: "execution_BOS_after_displacement",
-      passed:
-        Boolean(executionBreak?.detected)
-    },
-    {
-      name: "linked_execution_POI",
-      passed:
-        Boolean(poi?.nearest)
-    },
-    {
-      name: "POI_retest",
-      passed:
-        Boolean(poi?.retest)
-    }
-  ];
+  /*
+   * ---------------------------------------------------------
+   * EVIDENCE
+   * ---------------------------------------------------------
+   */
 
-  const score =
-    checks.filter(
-      check =>
-        check.passed
-    ).length;
+  const liquidityPass =
+    liquidityAvailable;
+
+  const sweepPass =
+    Boolean(
+      sweep?.detected
+    );
+
+  const displacementPass =
+    Boolean(
+      displacement?.detected
+    );
+
+  const structurePass =
+    Boolean(
+      executionBreak?.detected
+    );
+
+  const poiPass =
+    Boolean(
+      poi?.nearest
+    );
+
+  const retestPass =
+    Boolean(
+      poi?.retest
+    );
 
   /*
-   * EXECUTION STATES
+   * Critical structural confirmation.
    *
-   * ARMED means the complete structural chain exists:
-   *
-   * sweep
-   * → displacement
-   * → BOS
-   * → linked execution POI
-   *
-   * Price has not yet retested the POI.
+   * The score can NEVER override this.
    */
+
+  const criticalStructuralConfirmation =
+    structurePass &&
+    (
+      executionBreak?.direction ===
+      normalizedDirection
+    );
+
+  /*
+   * A directional sweep is required before displacement.
+   * This prevents a random displacement candle from becoming
+   * an execution setup.
+   */
+
+  const criticalLiquidityConfirmation =
+    liquidityPass &&
+    sweepPass;
+
+  /*
+   * ---------------------------------------------------------
+   * QUALITY SCORING
+   *
+   * Raw maximum = 100
+   *
+   * Macro context       15
+   * Daily structure     15
+   * 4H structure        15
+   * Liquidity           15
+   * Sweep               10
+   * Displacement        10
+   * BOS / CHoCH         10
+   * POI quality         10
+   * ---------------------------------------------------------
+   */
+
+  let score = 0;
+
+  const macroPass =
+    macroBias === normalizedDirection;
+
+  const dailyPass =
+    context?.daily === normalizedDirection;
+
+  const fourHourPass =
+    context?.fourHour === normalizedDirection;
+
+  if (macroPass) {
+    score += 15;
+  }
+
+  if (dailyPass) {
+    score += 15;
+  }
+
+  if (fourHourPass) {
+    score += 15;
+  }
+
+  if (liquidityPass) {
+    score += 15;
+  }
+
+  if (sweepPass) {
+    score += 10;
+  }
+
+  if (displacementPass) {
+    score += 10;
+  }
+
+  if (structurePass) {
+    score += 10;
+  }
+
+  const poiQuality =
+    finite(
+      poi?.nearest?.qualityScore
+    );
+
+  if (poiQuality !== null) {
+    score +=
+      Math.min(
+        10,
+        Math.max(
+          0,
+          poiQuality / 10
+        )
+      );
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * TARGET + RISK
+   * ---------------------------------------------------------
+   *
+   * We deliberately do not manufacture an entry/stop here.
+   * Existing downstream entry/SL/TP calculations remain
+   * responsible for actual prices.
+   *
+   * The evaluator only records whether the current structure
+   * can support a valid internal-liquidity target.
+   * ---------------------------------------------------------
+   */
+
+  let targetQuality = 0;
+  let targetRR = null;
+
+  try {
+    const entry =
+      finite(price);
+
+    const existingStop =
+      finite(
+        snapshot?.tradePlan?.stop ??
+        snapshot?.stop ??
+        snapshot?.risk?.stop
+      );
+
+    if (
+      entry !== null &&
+      existingStop !== null
+    ) {
+      const targetResult =
+        calculateTargets(
+          snapshot,
+          normalizedDirection,
+          entry,
+          existingStop
+        );
+
+      targetQuality =
+        finite(
+          targetResult?.targetQuality
+        ) ?? 0;
+
+      targetRR =
+        finite(
+          targetResult?.rr
+        );
+    }
+  } catch (_) {
+    targetQuality = 0;
+    targetRR = null;
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * HARD GATES
+   * ---------------------------------------------------------
+   *
+   * These cannot be bought by a high score.
+   * ---------------------------------------------------------
+   */
+
+    /* FINAL QUALITY — evidence score is capped to the defined 100-point model. */
+    const baseQuality = score;
+
+    const finalQuality =
+      Math.min(
+        100,
+        Math.max(
+          0,
+          baseQuality
+        )
+      );
+
+    const hardGates = {
+      validDirection: true,
+
+      liquidityAvailable:
+        liquidityPass,
+
+      liquiditySweep:
+        sweepPass,
+
+      displacementAfterSweep:
+        displacementPass,
+
+      criticalStructuralConfirmation:
+        criticalStructuralConfirmation,
+
+      directionalPOI:
+        poiPass
+    };
+
+  /*
+   * Retest is NOT required to create an ARMED setup.
+   * It is required before ACTIVE.
+   */
+
+  const hardGateFailure =
+    Object.entries(
+      hardGates
+    )
+      .filter(
+        ([, passed]) =>
+          passed !== true
+      )
+      .map(
+        ([name]) =>
+          name
+      );
+
+  /*
+   * Countertrend setups require stronger evidence.
+   *
+   * They are not rejected merely because macro direction
+   * differs, but they cannot become ACTIVE without
+   * exceptional execution evidence.
+   */
+
+  const countertrendRequiredScore = 90;
+
+  const countertrendGate =
+    setupType !== "COUNTERTREND" ||
+    (
+      finalQuality >=
+      countertrendRequiredScore &&
+      criticalLiquidityConfirmation &&
+      criticalStructuralConfirmation &&
+      poiPass &&
+      retestPass
+    );
+
+  if (!countertrendGate) {
+    hardGateFailure.push(
+      "countertrend_quality_requirement"
+    );
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * STATE MACHINE
+   * ---------------------------------------------------------
+   *
+   * NO_TRADE
+   *   Critical evidence missing.
+   *
+   * WAIT
+   *   Structure is developing but execution chain is not
+   *   complete enough to arm.
+   *
+   * ARMED
+   *   Sweep → displacement → structural confirmation →
+   *   directional POI exist, but POI retest is not confirmed.
+   *
+   * ACTIVE
+   *   Full execution chain is confirmed and quality threshold
+   *   is satisfied.
+   */
+
+  const criticalFailure =
+    hardGateFailure.length > 0;
+
+  const qualityThreshold =
+    finalQuality >= 70;
+
   const armed =
-    Boolean(sweep?.detected) &&
-    Boolean(displacement?.detected) &&
-    Boolean(executionBreak?.detected) &&
-    Boolean(poi?.nearest);
+    !criticalFailure &&
+    criticalLiquidityConfirmation &&
+    criticalStructuralConfirmation &&
+    poiPass;
 
   const qualified =
     armed &&
-    Boolean(poi?.retest);
+    retestPass &&
+    qualityThreshold;
+
+  let status = "WAIT";
+
+  if (criticalFailure) {
+    status = "NO_TRADE";
+  } else if (qualified) {
+    status = "ACTIVE";
+  } else if (armed) {
+    status = "ARMED";
+  }
+
+  /*
+   * Explain exactly why the state was selected.
+   */
+
+  const stateReason = [];
+
+  if (status === "NO_TRADE") {
+    stateReason.push(
+      `Critical conditions missing: ${
+        hardGateFailure.join(", ")
+      }`
+    );
+  }
+
+  if (status === "WAIT") {
+    stateReason.push(
+      "Setup evidence is incomplete"
+    );
+  }
+
+  if (status === "ARMED") {
+    stateReason.push(
+      "Execution chain confirmed; waiting for POI retest"
+    );
+  }
+
+  if (status === "ACTIVE") {
+    stateReason.push(
+      "Execution chain confirmed and quality threshold passed"
+    );
+  }
+
+  /*
+   * Countertrend explanation.
+   */
+
+  if (
+    setupType === "COUNTERTREND"
+  ) {
+    stateReason.push(
+      `Countertrend minimum quality: ${
+        countertrendRequiredScore
+      }`
+    );
+  }
+
+
+  /*
+   * ---------------------------------------------------------
+   * EXPLAINABILITY
+   * ---------------------------------------------------------
+   */
+
+  const reasons = [];
+
+  reasons.push(
+    `Setup classification: ${setupType}`
+  );
+
+  reasons.push(
+    macroPass
+      ? "Macro direction supports execution direction"
+      : "Macro direction does not support execution direction"
+  );
+
+  reasons.push(
+    liquidityPass
+      ? `Structured liquidity available: ${liquidity.length} levels`
+      : "No structured liquidity available"
+  );
+
+  reasons.push(
+    sweepPass
+      ? `Liquidity sweep confirmed: ${
+          sweep?.liquidityType ||
+          sweep?.type ||
+          "unknown"
+        }`
+      : "No valid directional liquidity sweep"
+  );
+
+  reasons.push(
+    displacementPass
+      ? "Displacement occurred after sweep"
+      : "No confirmed displacement after sweep"
+  );
+
+  reasons.push(
+    structurePass
+      ? `Structural confirmation detected: ${
+          executionBreak?.type ||
+          "BOS/CHoCH"
+        }`
+      : "No confirmed structural break"
+  );
+
+  reasons.push(
+    poiPass
+      ? `Directional POI quality: ${
+          poiQuality ?? 0
+        }/100`
+      : "No valid directional POI"
+  );
+
+  reasons.push(
+    retestPass
+      ? "Price has retested the selected POI"
+      : "POI retest not confirmed"
+  );
+
+  if (
+    protectedStructure?.available
+  ) {
+    reasons.push(
+      `Protected structure available: ${
+        protectedStructure.protectedHigh !== null
+          ? "protected high"
+          : ""
+      }${
+        protectedStructure.protectedHigh !== null &&
+        protectedStructure.protectedLow !== null
+          ? " + "
+          : ""
+      }${
+        protectedStructure.protectedLow !== null
+          ? "protected low"
+          : ""
+      }`
+    );
+  } else {
+    reasons.push(
+      "No explicit protected structure exposed by snapshot"
+    );
+  }
+
+  if (
+    hardGateFailure.length
+  ) {
+    reasons.push(
+      `Hard gate failure: ${
+        hardGateFailure.join(", ")
+      }`
+    );
+  }
 
   return {
     qualified,
 
     armed,
 
-    status:
-      qualified
-        ? "EXECUTION_CONFIRMED"
-        : armed
-          ? "EXECUTION_ARMED"
-          : "EXECUTION_WAIT",
+    status,
 
-    score,
+    setupType,
 
-    required: 5,
+    direction:
+      normalizedDirection,
 
-    checks,
+    executionDirection,
+
+    score:
+      Math.round(
+        finalQuality
+      ),
+
+    normalizedScore:
+      finalQuality,
+
+    targetQuality,
+
+    targetRR,
+
+    hardGates,
+
+    hardGateFailure,
+
+    criticalStructuralConfirmation,
+
+    criticalLiquidityConfirmation,
+
+    checks: [
+      {
+        name: "macro_context",
+        passed: macroPass,
+        weight: 15
+      },
+      {
+        name: "daily_structure",
+        passed: dailyPass,
+        weight: 15
+      },
+      {
+        name: "4h_structure",
+        passed: fourHourPass,
+        weight: 15
+      },
+      {
+        name: "liquidity",
+        passed: liquidityPass,
+        weight: 15
+      },
+      {
+        name: "liquidity_sweep",
+        passed: sweepPass,
+        weight: 10
+      },
+      {
+        name: "displacement_after_sweep",
+        passed: displacementPass,
+        weight: 10
+      },
+      {
+        name: "BOS_CHoCH",
+        passed: structurePass,
+        weight: 10
+      },
+      {
+        name: "POI_quality",
+        passed: poiPass,
+        quality:
+          poiQuality
+      },
+      {
+        name: "POI_retest",
+        passed: retestPass
+      }
+    ],
+
+    liquidity,
+
+    protectedStructure,
 
     sweep,
 
@@ -2160,15 +2955,11 @@ function evaluateExecution(
 
     executionBreak,
 
-    poi
+    poi,
+
+    reasons
   };
 }
-
-/*
- * ---------------------------------------------------------
- * ENTRY
- * ---------------------------------------------------------
- */
 
 function calculateEntry(
   price,
@@ -2185,14 +2976,10 @@ function calculateEntry(
   }
 
   const poiLow =
-    finite(
-      poi.low
-    );
+    finite(poi.low);
 
   const poiHigh =
-    finite(
-      poi.high
-    );
+    finite(poi.high);
 
   if (
     poiLow === null ||
@@ -2202,17 +2989,39 @@ function calculateEntry(
     return null;
   }
 
-  /*
-   * Entry is the equilibrium of the actual execution POI.
-   *
-   * POIs are defined by low/high boundaries, so calculate
-   * the midpoint directly instead of requiring a separate
-   * midpoint property.
-   */
   const midpoint =
     (poiLow + poiHigh) / 2;
 
-  return midpoint;
+  const direction =
+    String(
+      poi?.direction ??
+      poi?.bias ??
+      ""
+    ).toLowerCase();
+
+  if (
+    direction === "bullish" ||
+    direction === "long"
+  ) {
+    return midpoint < current
+      ? midpoint
+      : poiLow < current
+        ? poiLow
+        : null;
+  }
+
+  if (
+    direction === "bearish" ||
+    direction === "short"
+  ) {
+    return midpoint > current
+      ? midpoint
+      : poiHigh > current
+        ? poiHigh
+        : null;
+  }
+
+  return null;
 }
 
 /*
@@ -2348,146 +3157,311 @@ function calculateStop(
  */
 
 function calculateTargets(
+  snapshot,
   direction,
   entry,
-  stop,
-  snapshot,
-  executionBreak = null
+  stop
 ) {
-  const e = finite(entry);
-  const s = finite(stop);
+  const normalized =
+    String(direction || "").toLowerCase();
 
-  if (e === null || s === null) {
-    return [];
+  const isLong =
+    normalized === "bullish" ||
+    normalized === "long";
+
+  const isShort =
+    normalized === "bearish" ||
+    normalized === "short";
+
+  const currentEntry =
+    finite(entry);
+
+  const currentStop =
+    finite(stop);
+
+  if (
+    currentEntry === null ||
+    currentStop === null ||
+    (!isLong && !isShort)
+  ) {
+    return {
+      valid: false,
+      target: null,
+      rr: null,
+      targetType: null,
+      targetQuality: 0,
+      reason: [
+        "Invalid entry, stop, or direction"
+      ]
+    };
   }
 
-  const risk = Math.abs(e - s);
+  const risk =
+    Math.abs(
+      currentEntry -
+      currentStop
+    );
 
-  if (risk <= 0) {
-    return [];
-  }
-
-  const targetStructure = getStructure(
-    snapshot,
-    "1h"
-  );
-
-  const candidates =
-    direction === "bullish"
-      ? [
-          targetStructure?.lastSwingHigh?.price,
-          targetStructure?.previousSwingHigh?.price,
-          getStructure(snapshot, "4h")?.lastSwingHigh?.price,
-          executionBreak?.level
-        ]
-          .map(finite)
-          .filter(
-            value =>
-              value !== null &&
-              value > e
-          )
-          .sort((a, b) => a - b)
-      : direction === "bearish"
-        ? [
-            targetStructure?.lastSwingLow?.price,
-            targetStructure?.previousSwingLow?.price,
-            getStructure(snapshot, "4h")?.lastSwingLow?.price,
-            executionBreak?.level
-          ]
-            .map(finite)
-            .filter(
-              value =>
-                value !== null &&
-                value < e
-            )
-            .sort((a, b) => b - a)
-        : [];
-
-  const minimumR = 1.5;
-
-  const structuralTargets =
-    candidates.filter(value => {
-      const rr =
-        Math.abs(value - e) / risk;
-
-      return rr >= minimumR;
-    });
-
-  const fallbackTargets =
-    direction === "bullish"
-      ? [
-          e + risk * 1.5,
-          e + risk * 2,
-          e + risk * 3
-        ]
-      : direction === "bearish"
-        ? [
-            e - risk * 1.5,
-            e - risk * 2,
-            e - risk * 3
-          ]
-        : [];
-
-  const targets = [];
-
-  for (const value of structuralTargets) {
-    if (
-      !targets.some(
-        existing =>
-          Math.abs(existing - value) < 1e-8
-      )
-    ) {
-      targets.push(value);
-    }
-
-    if (targets.length === 3) {
-      break;
-    }
-  }
-
-  for (const value of fallbackTargets) {
-    if (targets.length === 3) {
-      break;
-    }
-
-    if (
-      !targets.some(
-        existing =>
-          Math.abs(existing - value) < 1e-8
-      )
-    ) {
-      targets.push(value);
-    }
+  if (
+    !Number.isFinite(risk) ||
+    risk <= 0
+  ) {
+    return {
+      valid: false,
+      target: null,
+      rr: null,
+      targetType: null,
+      targetQuality: 0,
+      reason: [
+        "Invalid trade risk"
+      ]
+    };
   }
 
   /*
-   * Deterministic TP ordering.
+   * TARGET MODEL
    *
-   * LONG:
-   *   TP1 < TP2 < TP3
+   * Default execution target:
    *
-   * SHORT:
-   *   TP1 > TP2 > TP3
+   * LONG
+   *   → nearest valid internal buy-side liquidity
    *
-   * Structural and fallback targets may be mixed,
-   * so normalize the final ordering before returning.
+   * SHORT
+   *   → nearest valid internal sell-side liquidity
+   *
+   * Internal liquidity is execution liquidity.
+   * External liquidity remains contextual and is not
+   * promoted simply to manufacture a better RR.
    */
-  targets.sort(
-    direction === "bullish"
-      ? (a, b) => a - b
-      : direction === "bearish"
-        ? (a, b) => b - a
-        : () => 0
+
+  const liquidity =
+    collectLiquidity(
+      snapshot,
+      normalized
+    );
+
+  if (
+    !Array.isArray(liquidity) ||
+    !liquidity.length
+  ) {
+    return {
+      valid: false,
+      target: null,
+      rr: null,
+      targetType: null,
+      targetQuality: 0,
+      reason: [
+        "No structured liquidity available for target selection"
+      ]
+    };
+  }
+
+    const internalCandidates =
+      liquidity
+        .filter(level => {
+          if (!level) {
+            return false;
+          }
+
+          const levelPrice =
+            finite(level.price);
+
+          if (levelPrice === null) {
+            return false;
+          }
+
+          /*
+           * INTERNAL RANGE LIQUIDITY ONLY.
+           *
+           * Never promote external liquidity just
+           * to manufacture a better RR.
+           */
+          if (
+            level.liquidityClass !== "internal" &&
+            level.className !== "internal"
+          ) {
+            return false;
+          }
+
+          /*
+           * Protected structure is invalidation/context,
+           * not the default RR target.
+           */
+          if (
+            level.type === "protected_high" ||
+            level.type === "protected_low"
+          ) {
+            return false;
+          }
+
+          /*
+           * LONG:
+           * nearest buy-side liquidity above entry.
+           *
+           * SHORT:
+           * nearest sell-side liquidity below entry.
+           */
+          if (isLong) {
+            return (
+              level.side === "buy_side" &&
+              levelPrice > currentEntry
+            );
+          }
+
+          return (
+            level.side === "sell_side" &&
+            levelPrice < currentEntry
+          );
+        })
+        .map(level => ({
+          ...level,
+          price:
+            finite(level.price)
+        }))
+        .filter(level =>
+          level.price !== null
+        );
+
+  if (!internalCandidates.length) {
+    return {
+      valid: false,
+      target: null,
+      rr: null,
+      targetType: null,
+      targetQuality: 0,
+      reason: [
+        "No valid internal range liquidity exists in the trade direction"
+      ]
+    };
+  }
+
+  /*
+   * Nearest reachable internal liquidity.
+   *
+   * LONG → smallest level above entry.
+   * SHORT → largest level below entry.
+   */
+  internalCandidates.sort(
+    (a, b) =>
+      isLong
+        ? a.price - b.price
+        : b.price - a.price
   );
 
-  return targets;
+  const selected =
+    internalCandidates[0];
+
+  const target =
+    selected.price;
+
+  const reward =
+    isLong
+      ? target - currentEntry
+      : currentEntry - target;
+
+  if (
+    !Number.isFinite(reward) ||
+    reward <= 0
+  ) {
+    return {
+      valid: false,
+      target: null,
+      rr: null,
+      targetType: null,
+      targetQuality: 0,
+      reason: [
+        "Selected internal liquidity does not provide positive reward"
+      ]
+    };
+  }
+
+  const rr =
+    reward / risk;
+
+  /*
+   * Target quality is based on the actual liquidity object.
+   * No points are awarded for information that does not exist.
+   */
+
+  let targetQuality = 0;
+
+  if (
+    selected.timeframe === "30m"
+  ) {
+    targetQuality += 30;
+  }
+
+  if (
+    selected.timeframe === "1h"
+  ) {
+    targetQuality += 35;
+  }
+
+  if (
+    selected.type === "equal_highs" ||
+    selected.type === "equal_lows"
+  ) {
+    targetQuality += 25;
+  }
+
+  if (
+    selected.source
+  ) {
+    targetQuality += 10;
+  }
+
+  targetQuality =
+    Math.min(
+      100,
+      targetQuality
+    );
+
+  return {
+    valid: true,
+
+    target,
+
+    rr:
+      Math.round(
+        rr * 100
+      ) / 100,
+
+    reward:
+      round(
+        reward
+      ),
+
+    risk:
+      round(
+        risk
+      ),
+
+    targetType:
+      "internal_liquidity",
+
+    targetQuality,
+
+    targetLiquidity: {
+      price: target,
+      type: selected.type,
+      side: selected.side,
+      timeframe: selected.timeframe,
+      source: selected.source,
+      priority: selected.priority
+    },
+
+    candidates:
+      internalCandidates,
+
+    reason: [
+      `Targeting nearest valid internal liquidity`,
+      `${selected.timeframe} ${selected.type}`,
+      `Target ${target}`,
+      `RR ${Math.round(rr * 100) / 100}`
+    ]
+  };
 }
 
-/*
- * Backwards-compatible single-target helper.
- *
- * TP1 remains the legacy `target` value.
- */
 function calculateTarget(
   direction,
   entry,
@@ -2496,13 +3470,15 @@ function calculateTarget(
 ) {
   const targets =
     calculateTargets(
+      snapshot,
       direction,
       entry,
-      stop,
-      snapshot
+      stop
     );
 
-  return targets[0] ?? null;
+  return targets?.valid
+    ? targets.target
+    : null;
 }
 
 /*
@@ -2568,7 +3544,7 @@ function gradeTradeSetup({
 
   if (Number.isFinite(executionScore)) {
     points += Math.min(
-      executionScore * 5,
+      executionScore * 0.25,
       25
     );
   }
@@ -2767,10 +3743,10 @@ function buildTradePlan(
       ...base,
 
       score:
-        execution.score * 15,
+        Math.round(execution.score * 0.15),
 
       grade:
-        execution.score >= 3
+        execution.score >= 50
           ? "WATCH"
           : "NO_TRADE",
 
@@ -2821,7 +3797,7 @@ function buildTradePlan(
       grade: "WATCH",
 
       score:
-        execution.score * 20,
+        Math.round(execution.score * 0.20),
 
       execution,
 
@@ -2886,21 +3862,22 @@ function buildTradePlan(
 
   const targets =
     calculateTargets(
+      snapshot,
       htf.direction,
       entry,
-      stop,
-      snapshot,
-      execution.executionBreak
+      stop
     );
 
   const target =
-    targets[0] ?? null;
+    targets?.valid
+      ? targets.target
+      : null;
 
   if (
     entry === null ||
     stop === null ||
     target === null ||
-    targets.length === 0
+    !targets?.valid
   ) {
     return {
       ...base,
@@ -3001,7 +3978,7 @@ function buildTradePlan(
 
   /*
    * Normalize R:R before the final gate so floating-point
-   * precision cannot reject a mathematically valid 1.5R setup.
+   * precision cannot reject a mathematically valid 2.0R setup.
    */
   const riskReward =
     rawRiskReward !== null
@@ -3013,7 +3990,7 @@ function buildTradePlan(
    */
   if (
     riskReward === null ||
-    riskReward < 1.5
+    riskReward < 2.0
   ) {
     return {
       ...base,
@@ -3053,7 +4030,7 @@ function buildTradePlan(
       `RR: ${riskReward}`,
       `HTF confirmed: ${htf.confirmed}`,
       `Regime score: ${regime?.score ?? 0}`,
-      `Execution score: ${execution?.score ?? 0}/5`
+      `Execution score: ${execution?.score ?? 0}/100`
     ].join("\n")
   );
 
@@ -3071,22 +4048,16 @@ function buildTradePlan(
 
     grade: finalGrade.grade,
 
-    confidence:
-      finalGrade.confidence,
-
-    confidence: finalGrade.confidence,
 
     entry,
     stop,
     target,
-
-    targets:
-      targets.map(
-        (price, index) => ({
-          index: index + 1,
-          price
-        })
-      ),
+      targets: [
+        {
+          index: 1,
+          price: target
+        }
+      ],
 
     riskReward:
       round(
