@@ -3,7 +3,7 @@ const https = require("https");
 const BYBIT_BASE_URL = "https://api.bytick.com";
 const COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3";
 
-const TOP_LIMIT = 100;
+const TOP_LIMIT = 200;
 
 function httpGet(baseUrl, path, headers = {}) {
   return new Promise((resolve, reject) => {

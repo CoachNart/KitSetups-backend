@@ -251,20 +251,11 @@ async function publishSymbolSignal(signal) {
  *
  * Nothing is reconstructed from scratch.
  */
-function buildFrontendSnapshot(results) {
+async function buildFrontendSnapshot(results) {
   const validResults = results.filter(Boolean);
 
   const signals = [];
   const setups = {};
-
-  /*
-   * IMPORTANT:
-   *
-   * Full per-market intelligence is now stored in
-   * marketIntelligence/{symbol}.
-   *
-   * signals/latest is deliberately kept small.
-   */
 
   for (const result of validResults) {
     const symbol = result.symbol;
@@ -293,6 +284,65 @@ function buildFrontendSnapshot(results) {
     }
   }
 
+  /*
+   * Persisted ACTIVE signals are part of the live setup feed.
+   *
+   * This is important because the intelligence engine may temporarily
+   * return zero actionable signals for a market while its previously
+   * published setup is still ACTIVE.
+   *
+   * Closed historical signals remain history-only.
+   */
+  try {
+    const activeSnapshot = await db
+      .collection(SIGNALS_COLLECTION)
+      .where("lifecycle.status", "==", "ACTIVE")
+      .get();
+
+    for (const doc of activeSnapshot.docs) {
+      const persisted = doc.data() || {};
+
+      if (persisted.published !== true) {
+        continue;
+      }
+
+      const persistedSymbol = persisted.symbol;
+
+      if (!persistedSymbol) {
+        continue;
+      }
+
+      const alreadyPresent = signals.some((signal) => {
+        const signalIdentity = signal.setupIdentity || getSetupIdentity(signal);
+        const persistedIdentity =
+          persisted.setupIdentity || getSetupIdentity(persisted);
+
+        return signalIdentity === persistedIdentity;
+      });
+
+      if (alreadyPresent) {
+        continue;
+      }
+
+      signals.push({
+        ...persisted,
+        signalId: persisted.signalId || doc.id,
+        setupIdentity:
+          persisted.setupIdentity || getSetupIdentity(persisted),
+        lifecycle: persisted.lifecycle || null,
+        signalState:
+          persisted.signalState ||
+          getLifecycleStatus(persisted) ||
+          "ACTIVE",
+      });
+    }
+  } catch (error) {
+    console.warn(
+      "⚠️ Persisted ACTIVE signal merge failed:",
+      error.message || error,
+    );
+  }
+
   const primary =
     validResults.find((result) => result.symbol === "BTCUSDT") ||
     validResults[0] ||
@@ -319,21 +369,10 @@ function buildFrontendSnapshot(results) {
 
     availableTimeframes: primary?.availableTimeframes || [],
 
-    /*
-     * DO NOT store the full markets object here.
-     *
-     * It belongs in:
-     *
-     * marketIntelligence/{symbol}
-     */
     markets: {},
 
     market: primary?.market || null,
 
-    /*
-     * Keep only the primary market in latest.
-     * The API reconstructs the complete markets object.
-     */
     primary: primary
       ? {
           ...primary,
@@ -351,7 +390,6 @@ function buildFrontendSnapshot(results) {
     },
   };
 }
-
 async function saveMarketIntelligence(result) {
   if (!result?.symbol) {
     return;
@@ -523,7 +561,7 @@ async function runScanner() {
     ? ranking.rankedMarkets
     : [];
 
-  const topMarkets = rankedMarkets.slice(0, 100);
+  const topMarkets = rankedMarkets.slice(0, 200);
 
   const symbols = topMarkets.map((item) => item?.symbol).filter(Boolean);
 
@@ -639,7 +677,7 @@ async function runScanner() {
    * Build the canonical frontend payload
    * from the actual engine responses.
    */
-  const frontendSnapshot = buildFrontendSnapshot(results);
+  const frontendSnapshot = await buildFrontendSnapshot(results);
 
   /*
    * Never overwrite the frontend snapshot
