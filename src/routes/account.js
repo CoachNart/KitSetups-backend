@@ -1,5 +1,6 @@
 const { userRef } = require("../services/firestore");
 const { requireAuth } = require("../middleware/auth");
+const { getAccessState } = require("../services/access");
 
 function json(res, status, data) {
   res.writeHead(status, {
@@ -33,12 +34,21 @@ async function accountRoutes(req, res) {
     }
 
     const data = snap.data();
+    const access = getAccessState(data);
 
     return json(res, 200, {
       ok: true,
       data: {
         ...data,
         id: uid,
+
+        // Live access state calculated from current time
+        // and the persisted trial/subscription dates.
+        trialActive: access.status === "TRIAL_ACTIVE",
+        accessLocked: access.accessLocked,
+        accessStatus: access.status,
+        accessExpiresAt: access.expiresAt,
+        access,
       },
     });
   });
