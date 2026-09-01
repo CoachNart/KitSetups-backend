@@ -499,15 +499,26 @@ async function scanSymbol(symbol) {
      */
     await saveMarketIntelligence(result);
 
-    const actionableSignals = Array.isArray(result.signals)
-      ? result.signals
+    /*
+     * PUBLICATION GATE
+     *
+     * Only READY signals may create a published trade.
+     * WAIT and ARMED are analysis states, not published trades.
+     *
+     * ACTIVE is handled separately below as the continuation
+     * of an already-published setup.
+     */
+    const readySignals = Array.isArray(result.signals)
+      ? result.signals.filter(
+          (signal) => getLifecycleStatus(signal) === "READY",
+        )
       : [];
 
     /*
-     * ONLY actionable/trade-ready signals
-     * are allowed into the published feed.
+     * ONLY READY trade signals are allowed to create
+     * new published records.
      */
-    if (actionableSignals.length === 0) {
+    if (readySignals.length === 0) {
       /*
        * IMPORTANT:
        * Never delete a previously published signal here.
@@ -535,12 +546,22 @@ async function scanSymbol(symbol) {
     }
     const previousSignal = await loadPreviousSignal(symbol);
 
-    const signal = mergeLifecycle(result, previousSignal);
+    /*
+     * A READY result creates the published trade.
+     * An existing ACTIVE trade may continue through lifecycle
+     * handling, but WAIT/ARMED never create publications.
+     */
+    const publishResult = {
+      ...result,
+      signals: readySignals,
+    };
+
+    const signal = mergeLifecycle(publishResult, previousSignal);
     await publishSymbolSignal(signal);
 
     console.log(
       `   └─ ${symbol}: ` +
-        `${actionableSignals.length} actionable signal(s) — PUBLISHED`,
+        `${readySignals.length} READY signal(s) — PUBLISHED`,
     );
 
     return signal;
