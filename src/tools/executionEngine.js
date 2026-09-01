@@ -202,56 +202,6 @@ function buildPOI(structure, direction) {
   return null;
 }
 
-function buildRiskPlan(price, poi, direction, rr = 2) {
-  if (
-    !Number.isFinite(price) ||
-    !Number.isFinite(poi)
-  ) {
-    return {
-      entry: null,
-      stop: null,
-      target: null,
-      riskReward: null
-    };
-  }
-
-  const risk = Math.abs(price - poi);
-
-  if (risk <= 0) {
-    return {
-      entry: null,
-      stop: null,
-      target: null,
-      riskReward: null
-    };
-  }
-
-  if (direction === "LONG") {
-    return {
-      entry: price,
-      stop: poi,
-      target: price + risk * rr,
-      riskReward: rr
-    };
-  }
-
-  if (direction === "SHORT") {
-    return {
-      entry: price,
-      stop: poi,
-      target: price - risk * rr,
-      riskReward: rr
-    };
-  }
-
-  return {
-    entry: null,
-    stop: null,
-    target: null,
-    riskReward: null
-  };
-}
-
 function executionGate({
   direction,
   htfConfirmed = false,
@@ -328,28 +278,14 @@ function executionGate({
       direction
     );
 
-  const riskPlan =
-    buildRiskPlan(
-      price,
-      result.poi,
-      direction
-    );
+  /*
+   * RR / trade geometry is owned by tradePlan.js.
+   *
+   * executionEngine only confirms execution conditions.
+   * It must never manufacture entry, stop, target, or RR.
+   */
 
-  Object.assign(
-    result,
-    riskPlan
-  );
-
-  if (
-    result.entry === null ||
-    result.stop === null ||
-    result.target === null
-  ) {
-    result.reasons.push("Risk plan invalid");
-    return result;
-  }
-
-  result.status = "READY";
+  result.status = "EXECUTION_CONFIRMED";
   result.executable = true;
   result.reasons.push(
     "Execution conditions confirmed"
@@ -363,6 +299,5 @@ module.exports = {
   detectDisplacement,
   detectExecutionBOS,
   buildPOI,
-  buildRiskPlan,
   executionGate
 };

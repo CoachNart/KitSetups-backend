@@ -8,7 +8,10 @@ const { signalsRoutes } = require("./routes/signals");
 const { signalHistoryRoutes } = require("./routes/signalHistory");
 const { analysisRoutes } = require("./routes/analysis");
 const { developerRoutes } = require("./routes/developer");
-const { start: startScanner } = require("../scanner");
+const {
+  runScan,
+  startScannerLoop,
+} = require("./scanner/runner");
 
 const PORT = Number(process.env.PORT || 8787);
 
@@ -87,10 +90,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🔥 KitSetups backend running on :${PORT}`);
 
-  startScanner().catch((error) => {
-    console.error(
-      "❌ Scanner startup failed:",
-      error.stack || error.message || error,
-    );
-  });
+  startScannerLoop();
 });
