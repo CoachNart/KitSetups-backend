@@ -296,13 +296,24 @@ async function buildFrontendSnapshot(results) {
   try {
     const activeSnapshot = await db
       .collection(SIGNALS_COLLECTION)
-      .where("lifecycle.status", "==", "ACTIVE")
+      .where("published", "==", true)
       .get();
 
     for (const doc of activeSnapshot.docs) {
       const persisted = doc.data() || {};
 
       if (persisted.published !== true) {
+        continue;
+      }
+
+      const persistedStatus =
+        persisted?.lifecycle?.status ||
+        persisted?.signalState ||
+        persisted?.tradePlan?.lifecycleStatus ||
+        persisted?.tradePlan?.status ||
+        "";
+
+      if (persistedStatus !== "ACTIVE") {
         continue;
       }
 
