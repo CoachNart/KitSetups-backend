@@ -78,6 +78,14 @@ function hasBullishEvidence({
   structure,
   momentum,
 }) {
+  const bos = normalizeDirection(
+    structure?.breaks?.bos?.direction
+  );
+
+  if (bos) {
+    return bos === "LONG";
+  }
+
   return (
     getContextDirection(context) === "LONG" ||
     getStructureDirection(structure) === "LONG" ||
@@ -90,6 +98,14 @@ function hasBearishEvidence({
   structure,
   momentum,
 }) {
+  const bos = normalizeDirection(
+    structure?.breaks?.bos?.direction
+  );
+
+  if (bos) {
+    return bos === "SHORT";
+  }
+
   return (
     getContextDirection(context) === "SHORT" ||
     getStructureDirection(structure) === "SHORT" ||
@@ -265,6 +281,13 @@ function hasStructuralBreak(structure, direction) {
   return normalizeDirection(bos.direction) === direction;
 }
 
+function hasDirectionalStructure(structure, direction) {
+  return (
+    getStructureDirection(structure) === direction ||
+    hasStructuralBreak(structure, direction)
+  );
+}
+
 function hasUsefulLiquidity(liquidity, direction, price) {
   if (!liquidity || !Number.isFinite(Number(price))) {
     return false;
@@ -421,12 +444,27 @@ function detectSetup({
 
   const structuralConfirmation =
     best.evidence.intermediate ||
-    best.evidence.trade;
+    best.evidence.trade ||
+    (
+      best.direction === "LONG" &&
+      getStructureDirection(structures?.["1h"]) === "LONG"
+    ) ||
+    (
+      best.direction === "SHORT" &&
+      getStructureDirection(structures?.["1h"]) === "SHORT"
+    );
 
   const executionConfirmation =
     best.evidence.execution ||
     best.executionBreak ||
-    best.tradeBreak;
+    (
+      best.direction === "LONG" &&
+      getStructureDirection(structures?.["1h"]) === "LONG"
+    ) ||
+    (
+      best.direction === "SHORT" &&
+      getStructureDirection(structures?.["1h"]) === "SHORT"
+    );
 
   if (!macroPrimary) {
     reasons.push(

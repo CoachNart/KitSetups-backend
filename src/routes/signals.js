@@ -149,15 +149,6 @@ async function signalsRoutes(req, res) {
           delete safeSignal.entryZone;
           delete safeSignal.reason;
 
-          if (safeSignal.tradePlan) {
-            safeSignal.tradePlan = { ...safeSignal.tradePlan };
-            delete safeSignal.tradePlan.entry;
-            delete safeSignal.tradePlan.stop;
-            delete safeSignal.tradePlan.target;
-            delete safeSignal.tradePlan.entryZone;
-            delete safeSignal.tradePlan.reason;
-          }
-
           /*
            * Preserve lifecycle state for locked previews,
            * but never expose target execution prices.
@@ -183,11 +174,7 @@ async function signalsRoutes(req, res) {
       /*
        * signals/latest is the compact frontend index.
        *
-       * Full engine intelligence lives in:
-       *
-       * marketIntelligence/{symbol}
-       *
-       * Preserve the compact scanner payload without
+       * Preserve the scanner payload without
        * reconstructing or discarding its fields.
        */
 

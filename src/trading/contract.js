@@ -224,16 +224,26 @@ function createSetupResult({
     (target, index) => ({
       index: index + 1,
       price: Number(target.price),
+      timeframe: target.timeframe || null,
+      type: target.type || null,
+      side: target.side || null,
+      riskReward:
+        Number.isFinite(Number(target.riskReward))
+          ? Number(target.riskReward)
+          : calculateRiskReward({
+              direction,
+              entry,
+              stop,
+              target: Number(target.price),
+            }),
       reason: target.reason || null,
     }),
   );
 
-  const riskReward = calculateRiskReward({
-    direction,
-    entry,
-    stop,
-    target: normalizedTargets[0].price,
-  });
+  const riskReward =
+    Number.isFinite(Number(normalizedTargets[0]?.riskReward))
+      ? Number(normalizedTargets[0].riskReward)
+      : null;
 
   return {
     symbol,

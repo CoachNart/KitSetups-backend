@@ -139,6 +139,19 @@ function collectLiquidityCandidates(
     }
 
     for (const level of levels) {
+      if (!level) {
+        continue;
+      }
+
+      /*
+       * Targets may only come from internal liquidity.
+       * External liquidity remains contextual and must never
+       * be promoted into an execution target.
+       */
+      if (level.liquidityClass !== "internal") {
+        continue;
+      }
+
       const price = priceOf(level);
 
       if (
@@ -166,68 +179,6 @@ function collectLiquidityCandidates(
               : "sell_side"
           ),
         source: "liquidity",
-      });
-    }
-  }
-
-  return candidates;
-}
-
-function collectStructureCandidates(
-  structures,
-  direction,
-  entry
-) {
-  const candidates = [];
-
-  for (const timeframe of TIMEFRAME_PRIORITY) {
-    const structure =
-      structures?.[timeframe];
-
-    if (!structure?.valid) {
-      continue;
-    }
-
-    const highs =
-      structure?.swings?.highs || [];
-
-    const lows =
-      structure?.swings?.lows || [];
-
-    /*
-     * LONG targets use highs.
-     * SHORT targets use lows.
-     */
-    const levels =
-      direction === "LONG"
-        ? highs
-        : lows;
-
-    for (const level of levels) {
-      const price = priceOf(level);
-
-      if (
-        !isDirectionalTarget(
-          direction,
-          entry,
-          price
-        )
-      ) {
-        continue;
-      }
-
-      candidates.push({
-        price,
-        timeframe,
-        type:
-          direction === "LONG"
-            ? "swing_high"
-            : "swing_low",
-        side:
-          direction === "LONG"
-            ? "buy_side"
-            : "sell_side",
-        source: "structure",
       });
     }
   }
@@ -436,16 +387,28 @@ function buildTargets({
       ? entry - stop
       : stop - entry;
 
-  if (risk <= 0) {
+  if (!finite(risk) || risk <= 0) {
     return {
       valid: false,
       targets: [],
       riskReward: null,
-      reason:
-        "Stop is invalid for trade direction",
+      reason: "Stop is invalid for trade direction",
     };
   }
 
+  /*
+   * TARGET SOURCE
+   *
+   * Targets come exclusively from directional liquidity.
+   *
+   * LONG:
+   *   buy-side liquidity above entry.
+   *
+   * SHORT:
+   *   sell-side liquidity below entry.
+   *
+   * Generic structure levels are NOT promoted into targets.
+   */
   const liquidityCandidates =
     collectLiquidityCandidates(
       liquidity,
@@ -453,18 +416,22 @@ function buildTargets({
       entry
     );
 
-  const structureCandidates =
-    collectStructureCandidates(
-      structures,
-      direction,
-      entry
+  const candidates =
+    deduplicateCandidates(
+      liquidityCandidates
     );
 
-  const candidates =
-    deduplicateCandidates([
-      ...liquidityCandidates,
-      ...structureCandidates,
-    ]);
+  if (!candidates.length) {
+    return {
+      valid: false,
+      targets: [],
+      riskReward: null,
+      reason:
+        direction === "LONG"
+          ? "No valid buy-side liquidity exists above entry"
+          : "No valid sell-side liquidity exists below entry",
+    };
+  }
 
   sortDirectionalCandidates(
     candidates,
@@ -472,16 +439,95 @@ function buildTargets({
     entry
   );
 
-  return selectTargets(
-    candidates,
-    entry,
-    stop,
-    direction
-  );
+  /*
+   * Calculate RR for every genuine directional
+   * liquidity objective.
+   */
+  const valid =
+    candidates
+      .map((candidate) => ({
+        ...candidate,
+        riskReward:
+          calculateRR(
+            entry,
+            stop,
+            candidate.price,
+            direction
+          ),
+      }))
+      .filter(
+        (candidate) =>
+          candidate.riskReward !== null
+      );
+
+  /*
+   * The first target MUST provide at least 2R.
+   *
+   * We do not manufacture a target.
+   * We do not use external structure merely
+   * to improve RR.
+   */
+  const primary =
+    valid.find(
+      (candidate) =>
+        candidate.riskReward >= MIN_RR
+    ) || null;
+
+  if (!primary) {
+    return {
+      valid: false,
+      targets: [],
+      riskReward: valid[0]?.riskReward ?? null,
+      reason:
+        valid.length === 0
+          ? "No valid directional liquidity target exists"
+          : `No directional liquidity objective provides at least ${MIN_RR}R`,
+    };
+  }
+
+  /*
+   * Primary target is the nearest qualifying
+   * directional liquidity.
+   *
+   * Further targets may be exposed only after
+   * the primary 2R objective exists.
+   */
+  const ordered =
+    valid
+      .filter(
+        (candidate) =>
+          direction === "LONG"
+            ? candidate.price >= primary.price
+            : candidate.price <= primary.price
+      )
+      .sort(
+        (a, b) =>
+          direction === "LONG"
+            ? a.price - b.price
+            : b.price - a.price
+      );
+
+  const selected =
+    ordered
+      .slice(0, MAX_TARGETS)
+      .map((candidate, index) => ({
+        index: index + 1,
+        price: candidate.price,
+        timeframe: candidate.timeframe,
+        type: candidate.type,
+        side: candidate.side,
+        riskReward: candidate.riskReward,
+      }));
+
+  return {
+    valid: true,
+    targets: selected,
+    riskReward: selected[0].riskReward,
+    reason:
+      "Nearest qualifying directional liquidity provides acceptable risk/reward",
+  };
 }
 
 module.exports = {
-  MIN_RR,
-  MAX_TARGETS,
   buildTargets,
 };

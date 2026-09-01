@@ -118,7 +118,10 @@ async function runScan(
    * An empty READY set is not a destructive event.
    */
   if (signals.length > 0) {
-    await publishScannerSnapshot(signals);
+    await publishScannerSnapshot(signals, {
+      scannedSymbols: results.length,
+      publishedSignals: signals.length,
+    });
   }
 
   return results;

@@ -59,15 +59,6 @@ async function signalHistoryRoutes(req, res) {
           delete signal.entryZone;
           delete signal.reason;
 
-          if (signal.tradePlan) {
-            signal.tradePlan = { ...signal.tradePlan };
-            delete signal.tradePlan.entry;
-            delete signal.tradePlan.stop;
-            delete signal.tradePlan.target;
-            delete signal.tradePlan.entryZone;
-            delete signal.tradePlan.reason;
-          }
-
           if (signal.lifecycle) {
             signal.lifecycle = { ...signal.lifecycle };
 

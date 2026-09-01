@@ -40,42 +40,7 @@ async function scanSymbol(symbol) {
   return createSnapshot(result);
 }
 
-async function scanUniverse(
-  symbols = getUniverse()
-) {
-  if (!Array.isArray(symbols)) {
-    throw new Error(
-      "symbols must be an array"
-    );
-  }
-
-  const snapshots = [];
-
-  for (const symbol of symbols) {
-    try {
-      const snapshot =
-        await scanSymbol(symbol);
-
-      snapshots.push(snapshot);
-    } catch (error) {
-      snapshots.push({
-        symbol,
-        status: "ERROR",
-        valid: false,
-        stage: "scanner",
-        reason:
-          error.message ||
-          "Scan failed",
-        generatedAt:
-          new Date().toISOString(),
-      });
-    }
-  }
-
-  return snapshots;
-}
 
 module.exports = {
   scanSymbol,
-  scanUniverse,
 };
