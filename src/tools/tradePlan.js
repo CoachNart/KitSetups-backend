@@ -2713,7 +2713,7 @@ function evaluateExecution(
   if (criticalFailure) {
     status = "NO_TRADE";
   } else if (qualified) {
-    status = "ACTIVE";
+    status = "READY";
   } else if (armed) {
     status = "ARMED";
   }
@@ -2744,9 +2744,9 @@ function evaluateExecution(
     );
   }
 
-  if (status === "ACTIVE") {
+  if (status === "READY") {
     stateReason.push(
-      "Execution chain confirmed and quality threshold passed"
+      "Execution chain confirmed and quality threshold passed; ready for entry"
     );
   }
 
