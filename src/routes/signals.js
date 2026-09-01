@@ -3,6 +3,7 @@ const { userRef, db } = require("../services/firestore");
 const { requireAuth } = require("../middleware/auth");
 
 const { getAccessState } = require("../services/access");
+const { fetchTicker } = require("../trading/data/marketData");
 
 const SIGNALS_COLLECTION = "signals";
 
@@ -100,6 +101,43 @@ async function signalsRoutes(req, res) {
       let responseSignals = Array.isArray(scannerData.signals)
         ? scannerData.signals
         : [];
+
+      /*
+       * LIVE MARKET PRICE
+       *
+       * Scanner snapshots contain the price captured during the
+       * last scan cycle. That price must NOT be treated as the
+       * current market price.
+       *
+       * Refresh the market price from the live ticker whenever
+       * the frontend requests signals.
+       *
+       * Setup levels (entry / stop / targets) remain unchanged.
+       */
+      responseSignals = await Promise.all(
+        responseSignals.map(async (signal) => {
+          try {
+            const ticker = await fetchTicker(signal.symbol);
+
+            if (
+              Number.isFinite(ticker?.lastPrice) &&
+              ticker.lastPrice > 0
+            ) {
+              return {
+                ...signal,
+                price: ticker.lastPrice,
+              };
+            }
+          } catch (error) {
+            console.warn(
+              `⚠️ Live price refresh failed for ${signal.symbol}:`,
+              error.message || error,
+            );
+          }
+
+          return signal;
+        }),
+      );
 
       if (!access.hasAccess) {
         responseSignals = responseSignals.map((signal) => {
