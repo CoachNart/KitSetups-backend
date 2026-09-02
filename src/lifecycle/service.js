@@ -43,7 +43,8 @@ function setupId(setup) {
     setup.symbol,
     setup.direction,
     setup.entry,
-    setup.generatedAt || "",
+    setup.stop,
+    setup.targets?.[0]?.price,
   ].join(":");
 }
 
@@ -83,6 +84,91 @@ function createLifecycle(setup) {
   };
 }
 
+async function findLifecycle(setup) {
+  const id = setupId(setup);
+
+  const stable = await getLifecycle(id);
+
+  const legacyPrefix = [
+    setup.symbol,
+    setup.direction,
+    setup.entry,
+  ].join(":") + ":";
+
+  let legacy = null;
+
+  const lifecycleRecords =
+    await require("./persistence").listLifecycles();
+
+  for (const [recordId, record] of Object.entries(lifecycleRecords)) {
+    if (!recordId.startsWith(legacyPrefix)) {
+      continue;
+    }
+
+    if (recordId === id) {
+      continue;
+    }
+
+    if (
+      !legacy ||
+      record.status === STATES.MISSED ||
+      record.status === STATES.CLOSED ||
+      record.status === STATES.STOP_LOSS
+    ) {
+      legacy = record;
+    }
+  }
+
+  if (
+    stable &&
+    legacy &&
+    (
+      legacy.status === STATES.MISSED ||
+      legacy.status === STATES.CLOSED ||
+      legacy.status === STATES.STOP_LOSS
+    ) &&
+    stable.status !== legacy.status
+  ) {
+    const migrated =
+      await saveLifecycle(id, legacy);
+
+    return {
+      id,
+      lifecycle: migrated,
+      existing: true,
+      migrated: true,
+    };
+  }
+
+  if (stable) {
+    return {
+      id,
+      lifecycle: stable,
+      existing: true,
+      migrated: false,
+    };
+  }
+
+  if (legacy) {
+    const migrated =
+      await saveLifecycle(id, legacy);
+
+    return {
+      id,
+      lifecycle: migrated,
+      existing: true,
+      migrated: true,
+    };
+  }
+
+  return {
+    id,
+    lifecycle: null,
+    existing: false,
+    migrated: false,
+  };
+}
+
 async function initializeLifecycle(setup) {
   if (!validSetup(setup)) {
     throw new Error(
@@ -90,18 +176,11 @@ async function initializeLifecycle(setup) {
     );
   }
 
-  const id =
-    setupId(setup);
+  const found =
+    await findLifecycle(setup);
 
-  const existing =
-    await getLifecycle(id);
-
-  if (existing) {
-    return {
-      id,
-      lifecycle: existing,
-      existing: true,
-    };
+  if (found.lifecycle) {
+    return found;
   }
 
   const lifecycle =
@@ -109,14 +188,15 @@ async function initializeLifecycle(setup) {
 
   const saved =
     await saveLifecycle(
-      id,
+      found.id,
       lifecycle
     );
 
   return {
-    id,
+    id: found.id,
     lifecycle: saved,
     existing: false,
+    migrated: false,
   };
 }
 
@@ -136,14 +216,13 @@ async function updateLifecycle(
     );
   }
 
-  const id =
-    setupId(setup);
+  const found =
+    await findLifecycle(setup);
 
-  const stored =
-    await getLifecycle(id);
+  const id = found.id;
 
   const lifecycle =
-    stored ||
+    found.lifecycle ||
     createLifecycle(setup);
 
   const tracked =

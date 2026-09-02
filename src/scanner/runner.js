@@ -8,6 +8,8 @@ const {
 } = require("../lifecycle/service");
 const {
   publishScannerSnapshot,
+  updatePublishedLifecycle,
+  getPublishedSetupForSymbol,
 } = require("./persistence");
 
 async function processSnapshot(snapshot) {
@@ -19,10 +21,40 @@ async function processSnapshot(snapshot) {
     snapshot.status !== "READY" ||
     snapshot.valid !== true
   ) {
+    const existing =
+      await getPublishedSetupForSymbol(
+        snapshot.symbol
+      );
+
+    if (
+      existing &&
+      Number.isFinite(Number(snapshot.price)) &&
+      Number(snapshot.price) > 0
+    ) {
+      const updated =
+        await updateLifecycle(
+          existing,
+          snapshot.price
+        );
+
+      await updatePublishedLifecycle(
+        existing,
+        updated.lifecycle
+      );
+
+      return {
+        symbol: snapshot.symbol,
+        status: snapshot.status,
+        lifecycle: updated.lifecycle,
+        action: "LIFECYCLE_UPDATED",
+        snapshot,
+      };
+    }
+
     return {
       symbol: snapshot.symbol,
       status: snapshot.status,
-      lifecycle: null,
+      lifecycle: existing?.lifecycle || null,
       action: "IGNORED",
       snapshot,
     };
@@ -36,6 +68,11 @@ async function processSnapshot(snapshot) {
       snapshot,
       snapshot.price
     );
+
+  await updatePublishedLifecycle(
+    snapshot,
+    updated.lifecycle
+  );
 
   return {
     symbol: snapshot.symbol,

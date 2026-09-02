@@ -8,7 +8,8 @@ function json(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, X-API-Key",
     "Access-Control-Allow-Methods": "GET,OPTIONS",
   });
 
@@ -39,42 +40,75 @@ async function signalHistoryRoutes(req, res) {
       const account = accountSnap.data() || {};
       const access = getAccessState(account);
 
+      /*
+       * History is permanent.
+       *
+       * Load every published signal. Do not use Firestore
+       * orderBy/limit here because older published records may
+       * not have publishedAt.
+       */
       const snapshot = await db
         .collection(SIGNALS_COLLECTION)
         .where("published", "==", true)
-        .orderBy("publishedAt", "desc")
-        .limit(100)
         .get();
 
-      const signals = snapshot.docs.map((doc) => {
-        const signal = {
-          ...doc.data(),
-          signalId: doc.data()?.signalId || doc.id,
-        };
+      const signals = snapshot.docs
+        .map((doc) => {
+          const signal = {
+            ...doc.data(),
+            signalId: doc.data()?.signalId || doc.id,
+          };
 
-        if (!access.hasAccess) {
-          delete signal.entry;
-          delete signal.stop;
-          delete signal.target;
-          delete signal.entryZone;
-          delete signal.reason;
+          if (!access.hasAccess) {
+            delete signal.entry;
+            delete signal.stop;
+            delete signal.target;
+            delete signal.entryZone;
+            delete signal.reason;
 
-          if (signal.lifecycle) {
-            signal.lifecycle = { ...signal.lifecycle };
+            if (signal.lifecycle) {
+              signal.lifecycle = {
+                ...signal.lifecycle,
+              };
 
-            if (Array.isArray(signal.lifecycle.targets)) {
-              signal.lifecycle.targets =
-                signal.lifecycle.targets.map((target) => {
-                  const safeTarget = { ...target };
-                  delete safeTarget.price;
-                  return safeTarget;
-                });
+              if (
+                Array.isArray(signal.lifecycle.targets)
+              ) {
+                signal.lifecycle.targets =
+                  signal.lifecycle.targets.map((target) => {
+                    const safeTarget = {
+                      ...target,
+                    };
+
+                    delete safeTarget.price;
+
+                    return safeTarget;
+                  });
+              }
             }
           }
-        }
 
-        return signal;
-      });
+          return signal;
+        })
+        .sort((a, b) => {
+          const timeA =
+            Date.parse(
+              a.publishedAt ||
+              a.updatedAt ||
+              a.generatedAt ||
+              ""
+            ) || 0;
+
+          const timeB =
+            Date.parse(
+              b.publishedAt ||
+              b.updatedAt ||
+              b.generatedAt ||
+              ""
+            ) || 0;
+
+          return timeB - timeA;
+        });
 
       return json(res, 200, {
         ok: true,
