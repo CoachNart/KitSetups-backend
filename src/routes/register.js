@@ -1,5 +1,4 @@
-const { db } = require("../services/firestore");
-const { userRef } = require("../services/firestore");
+const { db, userRef } = require("../services/firestore");
 const { deviceRef } = require("../services/device");
 const { requireAuth } = require("../middleware/auth");
 const { addDays, TRIAL_DAYS } = require("../services/access");
@@ -34,9 +33,6 @@ async function registerRoutes(req, res) {
       });
     }
 
-    const user = userRef(uid);
-    const device = deviceRef(deviceId);
-
     if (deviceId.length < 16 || deviceId.length > 256) {
       return json(res, 400, {
         ok: false,
@@ -45,61 +41,90 @@ async function registerRoutes(req, res) {
       });
     }
 
-    const [userSnap, deviceSnap] = await Promise.all([
-      user.get(),
-      device.get(),
-    ]);
+    const user = userRef(uid);
+    const device = deviceRef(deviceId);
 
-    // Existing Firebase identity already belongs to an account.
-    if (userSnap.exists) {
-      return json(res, 409, {
+    try {
+      await db.runTransaction(async (tx) => {
+        // Both reads happen inside the transaction so two concurrent
+        // registration attempts cannot race past the device gate.
+        const [userSnap, deviceSnap] = await Promise.all([
+          tx.get(user),
+          tx.get(device),
+        ]);
+
+        if (userSnap.exists) {
+          throw new Error("ACCOUNT_EXISTS");
+        }
+
+        if (deviceSnap.exists) {
+          throw new Error("DEVICE_ALREADY_REGISTERED");
+        }
+
+        const now = new Date();
+        const createdAt = now.toISOString();
+        const trialEndsAt = addDays(now, TRIAL_DAYS).toISOString();
+
+        const account = {
+          id: uid,
+          email: req.user.email || "",
+          displayName: req.user.name || "",
+          photoURL: req.user.picture || null,
+          plan: "free",
+          planName: "Free",
+          trialActive: true,
+          trialStartedAt: now,
+          createdAt,
+          updatedAt: createdAt,
+          trialEndsAt,
+          accessLocked: false,
+        };
+
+        tx.set(user, account);
+        tx.set(device, {
+          uid,
+          createdAt,
+          updatedAt: createdAt,
+        });
+      });
+
+      return json(res, 201, {
+        ok: true,
+        data: {
+          id: uid,
+          email: req.user.email || "",
+          displayName: req.user.name || "",
+          photoURL: req.user.picture || null,
+          plan: "free",
+          planName: "Free",
+          trialActive: true,
+          accessLocked: false,
+        },
+      });
+    } catch (error) {
+      if (error.message === "ACCOUNT_EXISTS") {
+        return json(res, 409, {
+          ok: false,
+          error: "Account already exists",
+          code: "ACCOUNT_EXISTS",
+        });
+      }
+
+      if (error.message === "DEVICE_ALREADY_REGISTERED") {
+        return json(res, 409, {
+          ok: false,
+          error: "This device already has a KitSetups account",
+          code: "DEVICE_ALREADY_REGISTERED",
+        });
+      }
+
+      console.error("❌ Registration failed:", error.stack || error);
+      return json(res, 500, {
         ok: false,
-        error: "Account already exists",
-        code: "ACCOUNT_EXISTS",
+        error: "Unable to create KitSetups account",
+        code: "REGISTRATION_FAILED",
       });
     }
-
-    // This device has already registered another KitSetups account.
-    if (deviceSnap.exists) {
-      return json(res, 409, {
-        ok: false,
-        error: "This device already has a KitSetups account",
-        code: "DEVICE_ALREADY_REGISTERED",
-      });
-    }
-
-    const now = new Date();
-    const createdAt = now.toISOString();
-    const trialEndsAt = addDays(now, TRIAL_DAYS).toISOString();
-
-    const account = {
-      id: uid,
-      email: req.user.email || "",
-      displayName: req.user.name || "",
-      photoURL: req.user.picture || null,
-      plan: "free",
-      planName: "Free",
-      trialActive: true,
-      trialStartedAt: now,
-      createdAt,
-      updatedAt: createdAt,
-      trialEndsAt,
-      accessLocked: false,
-    };
-
-    await db.runTransaction(async (tx) => {
-      tx.set(user, account);
-      tx.set(device, {
-        uid,
-        createdAt: createdAt,
-        updatedAt: createdAt,
-      });
-    });
-
-    return json(res, 201, {
-      ok: true,
-      data: account,
-    });
   });
 }
 
