@@ -2,7 +2,7 @@
 
 const https = require("https");
 
-const BYBIT_BASE_URL = "https://api.bytick.com";
+const BYBIT_BASE_URL = "https://api.bybit.com";
 const CATEGORY = "linear";
 
 const TIMEFRAMES = Object.freeze({
@@ -44,8 +44,8 @@ function requestJson(path) {
           if (res.statusCode !== 200) {
             reject(
               new Error(
-                `Bybit HTTP ${res.statusCode}: ${body.slice(0, 300)}`
-              )
+                `Bybit HTTP ${res.statusCode}: ${body.slice(0, 300)}`,
+              ),
             );
             return;
           }
@@ -53,12 +53,10 @@ function requestJson(path) {
           try {
             resolve(JSON.parse(body));
           } catch (error) {
-            reject(
-              new Error(`Invalid Bybit JSON response: ${error.message}`)
-            );
+            reject(new Error(`Invalid Bybit JSON response: ${error.message}`));
           }
         });
-      }
+      },
     );
 
     req.setTimeout(15000, () => {
@@ -95,22 +93,6 @@ function validateCandle(candle) {
   );
 }
 
-function normalizeCandles(rows) {
-  const now = Date.now();
-
-  return rows
-    .map(toCandle)
-    .filter(validateCandle)
-    .filter((candle) => {
-      /*
-       * The currently forming candle is never allowed
-       * into the analytical dataset.
-       */
-      return candle.openTime + candle.timeframeMs <= now;
-    })
-    .sort((a, b) => a.openTime - b.openTime);
-}
-
 async function fetchCandles(symbol, timeframe) {
   const interval = INTERVALS[timeframe];
 
@@ -122,37 +104,29 @@ async function fetchCandles(symbol, timeframe) {
     `/v5/market/kline?category=${CATEGORY}` +
       `&symbol=${encodeURIComponent(symbol)}` +
       `&interval=${interval}` +
-      `&limit=${LIMIT}`
+      `&limit=${LIMIT}`,
   );
 
   if (response?.retCode !== 0) {
     throw new Error(
       `Bybit kline error for ${symbol} ${timeframe}: ` +
-        `${response?.retMsg || "unknown error"}`
+        `${response?.retMsg || "unknown error"}`,
     );
   }
 
   const rows = response?.result?.list;
 
   if (!Array.isArray(rows)) {
-    throw new Error(
-      `Invalid candle payload for ${symbol} ${timeframe}`
-    );
+    throw new Error(`Invalid candle payload for ${symbol} ${timeframe}`);
   }
 
   const timeframeMs = TIMEFRAMES[timeframe];
 
   return rows
     .map(toCandle)
-    .map((candle) => ({
-      ...candle,
-      timeframeMs,
-    }))
+    .map((candle) => ({ ...candle, timeframeMs }))
     .filter(validateCandle)
-    .filter(
-      (candle) =>
-        candle.openTime + timeframeMs <= Date.now()
-    )
+    .filter((candle) => candle.openTime + timeframeMs <= Date.now())
     .sort((a, b) => a.openTime - b.openTime)
     .map(({ timeframeMs: _unused, ...candle }) => candle);
 }
@@ -160,13 +134,13 @@ async function fetchCandles(symbol, timeframe) {
 async function fetchTicker(symbol) {
   const response = await requestJson(
     `/v5/market/tickers?category=${CATEGORY}` +
-      `&symbol=${encodeURIComponent(symbol)}`
+      `&symbol=${encodeURIComponent(symbol)}`,
   );
 
   if (response?.retCode !== 0) {
     throw new Error(
       `Bybit ticker error for ${symbol}: ` +
-        `${response?.retMsg || "unknown error"}`
+        `${response?.retMsg || "unknown error"}`,
     );
   }
 
