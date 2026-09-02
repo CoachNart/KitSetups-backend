@@ -1,0 +1,24 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {analyzeStructure}=require('../analysis/structure');
+const {analyzeLiquidity}=require('../analysis/liquidity');
+const {calculateEntry}=require('../setup/entry');
+const {calculateStop}=require('../setup/stop');
+const {buildTargets}=require('../setup/targets');
+const {scoreSetup}=require('../quality/scorer');
+const {trackSetup}=require('../../lifecycle/tracker');
+const {detectSetup}=require('../setup/detector');
+function candles(n=80){const out=[];let p=100;for(let i=0;i<n;i++){const d=i<20?1:i<40?-1:1,o=p,c=p+d*(i%3===0?2:1),h=Math.max(o,c)+1,l=Math.min(o,c)-1;out.push({openTime:i*60000,open:o,high:h,low:l,close:c,isClosed:true});p=c;}return out;}
+const cs=candles();
+const structure=analyzeStructure(cs);assert.equal(structure.valid,true);assert.ok(structure.swings.highs.length>=0);assert.ok(structure.swings.lows.length>=0);
+const liquidity=analyzeLiquidity(cs,structure,structure.latest.low?.price||100);assert.equal(liquidity.valid,true);assert.ok(liquidity.nearest);
+const wait=detectSetup({symbol:'TEST',price:130,context:{bias:'bullish'},structures:{},liquidity:{},momentum:{}});assert.equal(wait.status,'WAIT');assert.equal(wait.reasons.length,1);
+const structures={};for(const tf of ['1w','1d','4h','1h','30m'])structures[tf]={...structure,direction:'bullish',protectedLow:{price:120,index:60},protectedHigh:{price:140,index:65},breaks:{latest:{direction:'LONG',kind:'BOS',level:125}}};
+const setup={direction:'LONG',executionCandle:{low:124,close:130,high:131}};const entry=calculateEntry({direction:'LONG',price:130,structures,setup});assert.equal(entry.valid,true);const stop=calculateStop({direction:'LONG',entry:entry.price,structures});assert.equal(stop.stop,120);
+let levels={};for(const tf of ['30m','1h','4h','1d','1w'])levels[tf]={valid:true,buySide:[{price:140,type:'swing_high',side:'buy_side',liquidityClass:'external',swept:false},{price:150,type:'equal_highs',side:'buy_side',liquidityClass:'internal',swept:false},{price:165,type:'swing_high',side:'buy_side',liquidityClass:'external',swept:false}],sellSide:[]};
+const rejected=buildTargets({entry:130,stop:120,direction:'LONG',liquidity:levels});assert.equal(rejected.valid,false);assert.equal(rejected.riskReward,1);assert.match(rejected.reason,/minimum/);
+for(const tf of Object.keys(levels))levels[tf]={...levels[tf],buySide:levels[tf].buySide.slice(1)};const targets=buildTargets({entry:130,stop:120,direction:'LONG',liquidity:levels});assert.equal(targets.valid,true);assert.equal(targets.targets[0].price,150);assert.equal(targets.targets[0].riskReward,2);
+const quality=scoreSetup({direction:'LONG',context:{timeframes:{'1w':{trend:'bullish',structure:'bullish'},'1d':{trend:'bullish',structure:'bullish'},'4h':{trend:'bullish',structure:'bullish'}}},structures,momentum:{timeframes:{'1h':{direction:'bullish'},'30m':{direction:'bullish'}}},liquidity:levels,riskReward:2});assert.equal(quality.valid,true);
+let lifecycle={status:'READY',targets:[{index:1,price:150,hit:false},{index:2,price:165,hit:false},{index:3,price:180,hit:false}]};const base={direction:'LONG',entry:130,stop:120,targets:lifecycle.targets};lifecycle=trackSetup({...base,lifecycle},130);assert.equal(lifecycle.status,'ACTIVE');lifecycle=trackSetup({...base,lifecycle},150);assert.equal(lifecycle.status,'TP1_HIT');lifecycle=trackSetup({...base,lifecycle},165);assert.equal(lifecycle.status,'TP2_HIT');lifecycle=trackSetup({...base,lifecycle},180);assert.equal(lifecycle.status,'TP3_HIT');lifecycle=trackSetup({...base,lifecycle},181);assert.equal(lifecycle.status,'CLOSED');
+const missed=trackSetup({...base,lifecycle:{status:'READY',targets:base.targets}},119);assert.equal(missed.status,'MISSED');const stopped=trackSetup({...base,lifecycle:{status:'ACTIVE',targets:base.targets}},119);assert.equal(stopped.status,'STOP_LOSS');
+console.log('KitSetups trading engine tests: PASS');
