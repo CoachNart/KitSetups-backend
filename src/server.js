@@ -8,6 +8,7 @@ const { signalsRoutes } = require("./routes/signals");
 const { signalHistoryRoutes } = require("./routes/signalHistory");
 const { analysisRoutes } = require("./routes/analysis");
 const { developerRoutes } = require("./routes/developer");
+const { paymentRoutes } = require("./routes/payment");
 const {
   runScan,
   startScannerLoop,
@@ -66,6 +67,10 @@ const server = http.createServer(async (req, res) => {
     const developerHandled = await developerRoutes(req, res);
 
     if (developerHandled !== false) return developerHandled;
+
+    const paymentHandled = await paymentRoutes(req, res);
+
+    if (paymentHandled !== false) return paymentHandled;
 
     const registerHandled = await registerRoutes(req, res);
 
