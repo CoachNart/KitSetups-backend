@@ -1,0 +1,50 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth.uid == uid;
+    }
+
+    // Users can read their own user document
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid);
+      allow update: if isOwner(uid);
+    }
+
+    // Signals are readable by all authenticated users
+    match /signals/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Only backend writes
+    }
+
+    // Lifecycle documents are readable by all, writable by backend only
+    match /lifecycle/{setupId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Only backend writes
+    }
+
+    // Users can read their own API keys
+    match /apiKeys/{userId}/{document=**} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Only backend writes
+    }
+
+    // Analysis is readable by all authenticated users
+    match /analysis/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Only backend writes
+    }
+
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
