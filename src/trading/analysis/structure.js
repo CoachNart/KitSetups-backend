@@ -6,12 +6,12 @@
  * Reads only closed candles.
  *
  * Responsibilities:
- * - swing highs
- * - swing lows
- * - HH / HL / LH / LL
- * - current structural direction
- * - BOS
- * - CHoCH
+ * - swing highs / lows
+ * - HH / HL / LH / LL / EQH / EQL
+ * - internal vs external structure
+ * - structural direction
+ * - BOS / CHoCH
+ * - protected highs / lows
  *
  * Does NOT:
  * - choose entries
@@ -61,7 +61,6 @@ function findSwingHighs(
     i++
   ) {
     const high = Number(data[i].high);
-
     let valid = true;
 
     for (let j = 1; j <= strength; j++) {
@@ -100,7 +99,6 @@ function findSwingLows(
     i++
   ) {
     const low = Number(data[i].low);
-
     let valid = true;
 
     for (let j = 1; j <= strength; j++) {
@@ -129,18 +127,25 @@ function findSwingLows(
 function classifyHighs(swingHighs) {
   const result = [];
 
-  for (let i = 1; i < swingHighs.length; i++) {
-    const previous = swingHighs[i - 1];
+  for (let i = 0; i < swingHighs.length; i++) {
     const current = swingHighs[i];
+    const previous = swingHighs[i - 1] || null;
 
-    result.push({
-      ...current,
-      classification:
+    let classification = "SH";
+
+    if (previous) {
+      classification =
         current.price > previous.price
           ? "HH"
           : current.price < previous.price
             ? "LH"
-            : "EQH",
+            : "EQH";
+    }
+
+    result.push({
+      ...current,
+      classification,
+      side: "buy_side",
     });
   }
 
@@ -150,24 +155,35 @@ function classifyHighs(swingHighs) {
 function classifyLows(swingLows) {
   const result = [];
 
-  for (let i = 1; i < swingLows.length; i++) {
-    const previous = swingLows[i - 1];
+  for (let i = 0; i < swingLows.length; i++) {
     const current = swingLows[i];
+    const previous = swingLows[i - 1] || null;
 
-    result.push({
-      ...current,
-      classification:
+    let classification = "SL";
+
+    if (previous) {
+      classification =
         current.price > previous.price
           ? "HL"
           : current.price < previous.price
             ? "LL"
-            : "EQL",
+            : "EQL";
+    }
+
+    result.push({
+      ...current,
+      classification,
+      side: "sell_side",
     });
   }
 
   return result;
 }
 
+/*
+ * Determine the dominant structural direction from the most
+ * recent confirmed high/low sequence.
+ */
 function determineDirection(highs, lows) {
   const recentHighs = highs.slice(-3);
   const recentLows = lows.slice(-3);
@@ -209,10 +225,18 @@ function determineDirection(highs, lows) {
   return "range";
 }
 
+/*
+ * A structural break is confirmed only when the latest closed
+ * candle closes beyond a confirmed swing.
+ *
+ * The swing immediately preceding that break becomes the
+ * protected opposing structure.
+ */
 function detectBreaks(
   candles,
   swingHighs,
-  swingLows
+  swingLows,
+  priorDirection = "range"
 ) {
   const data = getClosedCandles(candles);
 
@@ -225,40 +249,185 @@ function detectBreaks(
 
   const lastClose = Number(data.at(-1).close);
 
-  const previousHigh =
+  const latestHigh =
     swingHighs.at(-1) || null;
 
-  const previousLow =
+  const latestLow =
     swingLows.at(-1) || null;
 
   let bos = null;
   let choch = null;
 
   if (
-    previousHigh &&
-    lastClose > previousHigh.price
+    latestHigh &&
+    lastClose > latestHigh.price
   ) {
-    bos = {
-      direction: "bullish",
-      level: previousHigh.price,
-      time: data.at(-1).openTime,
-    };
+    const protectedLow =
+      swingLows
+        .filter(
+          (swing) =>
+            swing.index < latestHigh.index
+        )
+        .at(-1) || null;
+
+    const breakDirection = "bullish";
+
+    if (priorDirection === "bearish") {
+      choch = {
+        direction: breakDirection,
+        level: latestHigh.price,
+        time: data.at(-1).openTime,
+        protectedLow,
+      };
+    } else {
+      bos = {
+        direction: breakDirection,
+        level: latestHigh.price,
+        time: data.at(-1).openTime,
+        protectedLow,
+      };
+    }
   }
 
   if (
-    previousLow &&
-    lastClose < previousLow.price
+    latestLow &&
+    lastClose < latestLow.price
   ) {
-    bos = {
-      direction: "bearish",
-      level: previousLow.price,
-      time: data.at(-1).openTime,
-    };
+    const protectedHigh =
+      swingHighs
+        .filter(
+          (swing) =>
+            swing.index < latestLow.index
+        )
+        .at(-1) || null;
+
+    const breakDirection = "bearish";
+
+    if (priorDirection === "bullish") {
+      choch = {
+        direction: breakDirection,
+        level: latestLow.price,
+        time: data.at(-1).openTime,
+        protectedHigh,
+      };
+    } else {
+      bos = {
+        direction: breakDirection,
+        level: latestLow.price,
+        time: data.at(-1).openTime,
+        protectedHigh,
+      };
+    }
   }
 
   return {
     bos,
     choch,
+  };
+}
+
+/*
+ * Build the structural hierarchy.
+ *
+ * External structure:
+ * - the major swing forming the outer boundary of the
+ *   current structural range / leg.
+ *
+ * Internal structure:
+ * - confirmed swings occurring inside that outer range.
+ *
+ * This is deliberately based on the current structural leg,
+ * not candle age.
+ */
+function buildHierarchy(highs, lows, direction) {
+  const all = [
+    ...highs.map((item) => ({
+      ...item,
+      side: "buy_side",
+    })),
+    ...lows.map((item) => ({
+      ...item,
+      side: "sell_side",
+    })),
+  ].sort((a, b) => a.index - b.index);
+
+  if (!all.length) {
+    return {
+      internal: [],
+      external: [],
+    };
+  }
+
+  const latestHigh =
+    highs.at(-1) || null;
+
+  const latestLow =
+    lows.at(-1) || null;
+
+  let externalHigh = latestHigh;
+  let externalLow = latestLow;
+
+  if (direction === "bullish") {
+    externalLow =
+      lows
+        .filter(
+          (item) =>
+            item.classification === "HL" ||
+            item.classification === "SL"
+        )
+        .at(-1) || latestLow;
+  }
+
+  if (direction === "bearish") {
+    externalHigh =
+      highs
+        .filter(
+          (item) =>
+            item.classification === "LH" ||
+            item.classification === "SH"
+        )
+        .at(-1) || latestHigh;
+  }
+
+  const externalKeys = new Set();
+
+  if (externalHigh) {
+    externalKeys.add(
+      `high:${externalHigh.index}`
+    );
+  }
+
+  if (externalLow) {
+    externalKeys.add(
+      `low:${externalLow.index}`
+    );
+  }
+
+  const external = [];
+  const internal = [];
+
+  for (const item of all) {
+    const key =
+      `${item.type === "swing_high" ? "high" : "low"}:${item.index}`;
+
+    const enriched = {
+      ...item,
+      liquidityClass:
+        externalKeys.has(key)
+          ? "external"
+          : "internal",
+    };
+
+    if (externalKeys.has(key)) {
+      external.push(enriched);
+    } else {
+      internal.push(enriched);
+    }
+  }
+
+  return {
+    internal,
+    external,
   };
 }
 
@@ -270,19 +439,20 @@ function analyzeStructure(
     Number(options.swingStrength) ||
     DEFAULT_SWING_LENGTH;
 
-  const data = getClosedCandles(candles);
+  const data =
+    getClosedCandles(candles);
 
-  const swingHighs =
+  const rawSwingHighs =
     findSwingHighs(data, strength);
 
-  const swingLows =
+  const rawSwingLows =
     findSwingLows(data, strength);
 
   const highs =
-    classifyHighs(swingHighs);
+    classifyHighs(rawSwingHighs);
 
   const lows =
-    classifyLows(swingLows);
+    classifyLows(rawSwingLows);
 
   const direction =
     determineDirection(highs, lows);
@@ -290,9 +460,47 @@ function analyzeStructure(
   const breaks =
     detectBreaks(
       data,
-      swingHighs,
-      swingLows
+      rawSwingHighs,
+      rawSwingLows,
+      direction
     );
+
+  const hierarchy =
+    buildHierarchy(
+      highs,
+      lows,
+      direction
+    );
+
+  const protectedLow =
+    breaks?.bos?.protectedLow ||
+    breaks?.choch?.protectedLow ||
+    (
+      direction === "bullish"
+        ? hierarchy.external
+            .filter(
+              (item) =>
+                item.side === "sell_side"
+            )
+            .at(-1)
+        : lows.at(-1)
+    ) ||
+    null;
+
+  const protectedHigh =
+    breaks?.bos?.protectedHigh ||
+    breaks?.choch?.protectedHigh ||
+    (
+      direction === "bearish"
+        ? hierarchy.external
+            .filter(
+              (item) =>
+                item.side === "buy_side"
+            )
+            .at(-1)
+        : highs.at(-1)
+    ) ||
+    null;
 
   return {
     valid: data.length >= 20,
@@ -304,6 +512,8 @@ function analyzeStructure(
       lows,
     },
 
+    hierarchy,
+
     latest: {
       high: highs.at(-1) || null,
       low: lows.at(-1) || null,
@@ -311,7 +521,11 @@ function analyzeStructure(
 
     breaks,
 
-    candlesAnalyzed: data.length,
+    protectedLow,
+    protectedHigh,
+
+    candlesAnalyzed:
+      data.length,
 
     generatedAt:
       new Date().toISOString(),
@@ -330,7 +544,9 @@ function analyzeAllStructures(marketData) {
   for (const timeframe of TIMEFRAMES) {
     structures[timeframe] =
       analyzeStructure(
-        marketData.timeframes[timeframe]?.candles || []
+        marketData.timeframes[
+          timeframe
+        ]?.candles || []
       );
   }
 

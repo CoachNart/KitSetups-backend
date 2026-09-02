@@ -488,9 +488,15 @@ async function analyzeSymbol(symbol) {
       setup,
     });
 
+  const minimumRR = 2;
+  const firstTargetRR =
+    Number(targets?.targets?.[0]?.riskReward);
+
   if (
     !targets ||
-    targets.valid !== true
+    targets.valid !== true ||
+    !Number.isFinite(firstTargetRR) ||
+    firstTargetRR < minimumRR
   ) {
     return reject(
       symbol,

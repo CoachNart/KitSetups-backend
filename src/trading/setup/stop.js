@@ -34,7 +34,17 @@ const MIN_STOP_DISTANCE = 0.0010; // 0.10%
 const STOP_BUFFER = 0.0005;       // 0.05%
 
 function finite(value) {
-  return Number.isFinite(Number(value));
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
+    return false;
+  }
+
+  const number = Number(value);
+
+  return Number.isFinite(number) && number > 0;
 }
 
 function priceOf(point) {
@@ -49,26 +59,24 @@ function priceOf(point) {
   return null;
 }
 
-function getLatestStructuralLow(structure) {
+function getProtectedLow(structure) {
   return priceOf(
-    structure?.latest?.low ??
-    structure?.swings?.lows?.at?.(-1)
+    structure?.protectedLow
   );
 }
 
-function getLatestStructuralHigh(structure) {
+function getProtectedHigh(structure) {
   return priceOf(
-    structure?.latest?.high ??
-    structure?.swings?.highs?.at?.(-1)
+    structure?.protectedHigh
   );
 }
 
 function buildLongStop(entry, executionStructure, tradeStructure) {
   const executionLow =
-    getLatestStructuralLow(executionStructure);
+    getProtectedLow(executionStructure);
 
   const tradeLow =
-    getLatestStructuralLow(tradeStructure);
+    getProtectedLow(tradeStructure);
 
   /*
    * Prefer execution invalidation when it gives
@@ -119,10 +127,10 @@ function buildLongStop(entry, executionStructure, tradeStructure) {
 
 function buildShortStop(entry, executionStructure, tradeStructure) {
   const executionHigh =
-    getLatestStructuralHigh(executionStructure);
+    getProtectedHigh(executionStructure);
 
   const tradeHigh =
-    getLatestStructuralHigh(tradeStructure);
+    getProtectedHigh(tradeStructure);
 
   const candidates = [
     {

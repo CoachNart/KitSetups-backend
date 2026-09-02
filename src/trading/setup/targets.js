@@ -148,7 +148,14 @@ function collectLiquidityCandidates(
        * External liquidity remains contextual and must never
        * be promoted into an execution target.
        */
-      if (level.liquidityClass !== "internal") {
+      const isEqualLiquidity =
+          level.type === "equal_highs" ||
+          level.type === "equal_lows";
+
+        if (
+          level.liquidityClass !== "internal" &&
+          !isEqualLiquidity
+        ) {
         continue;
       }
 
@@ -222,6 +229,18 @@ function sortDirectionalCandidates(
   entry
 ) {
   return candidates.sort((a, b) => {
+      const equalA =
+        a.type === "equal_highs" ||
+        a.type === "equal_lows";
+
+      const equalB =
+        b.type === "equal_highs" ||
+        b.type === "equal_lows";
+
+      if (equalA !== equalB) {
+        return equalA ? -1 : 1;
+      }
+
     const distanceA =
       Math.abs(a.price - entry);
 
@@ -461,52 +480,49 @@ function buildTargets({
       );
 
   /*
-   * The first target MUST provide at least 2R.
+   * TP1 MUST be the nearest genuine directional
+   * liquidity objective.
    *
-   * We do not manufacture a target.
-   * We do not use external structure merely
-   * to improve RR.
+   * We NEVER skip a nearer liquidity level simply
+   * because a farther level offers better RR.
+   *
+   * If the nearest meaningful liquidity cannot
+   * provide at least 2R, the setup is rejected.
    */
-  const primary =
-    valid.find(
-      (candidate) =>
-        candidate.riskReward >= MIN_RR
-    ) || null;
+  const ordered =
+    valid.sort(
+      (a, b) =>
+        direction === "LONG"
+          ? a.price - b.price
+          : b.price - a.price
+    );
+
+  const primary = ordered[0] || null;
 
   if (!primary) {
     return {
       valid: false,
       targets: [],
-      riskReward: valid[0]?.riskReward ?? null,
+      riskReward: null,
+      reason: "No valid directional liquidity target exists",
+    };
+  }
+
+  if (primary.riskReward < MIN_RR) {
+    return {
+      valid: false,
+      targets: [],
+      riskReward: primary.riskReward,
       reason:
-        valid.length === 0
-          ? "No valid directional liquidity target exists"
-          : `No directional liquidity objective provides at least ${MIN_RR}R`,
+        `Nearest directional liquidity provides only ` +
+        `${primary.riskReward.toFixed(2)}R; minimum is ${MIN_RR}R`,
     };
   }
 
   /*
-   * Primary target is the nearest qualifying
-   * directional liquidity.
-   *
-   * Further targets may be exposed only after
-   * the primary 2R objective exists.
+   * TP2 and TP3 are the next progressively farther
+   * directional liquidity objectives.
    */
-  const ordered =
-    valid
-      .filter(
-        (candidate) =>
-          direction === "LONG"
-            ? candidate.price >= primary.price
-            : candidate.price <= primary.price
-      )
-      .sort(
-        (a, b) =>
-          direction === "LONG"
-            ? a.price - b.price
-            : b.price - a.price
-      );
-
   const selected =
     ordered
       .slice(0, MAX_TARGETS)
