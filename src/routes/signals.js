@@ -5,6 +5,7 @@ const { fetchTicker } = require("../trading/data/marketData");
 
 const SIGNALS_COLLECTION = "signals";
 const SIGNALS_DOCUMENT = "latest";
+const LIVE_STATUSES = new Set(["READY", "ENTRY_HIT", "ACTIVE", "TP1_HIT", "TP2_HIT", "TP3_HIT"]);
 
 function json(res, status, data) {
   res.writeHead(status, {
@@ -18,17 +19,14 @@ function json(res, status, data) {
 
 async function readScannerSnapshot() {
   const latest = await db.collection(SIGNALS_COLLECTION).doc(SIGNALS_DOCUMENT).get();
-
   if (latest.exists) return latest.data() || {};
 
   const published = await db.collection(SIGNALS_COLLECTION).where("published", "==", true).get();
   const signals = published.docs
     .map((doc) => ({ ...doc.data(), signalId: doc.data().signalId || doc.id }))
-    .filter((signal) => {
-      const status = signal.lifecycle?.status || signal.signalState || signal.status;
-      return ["READY", "ENTRY_HIT", "ACTIVE", "TP1_HIT", "TP2_HIT", "TP3_HIT"].includes(status);
-    });
+    .filter((signal) => LIVE_STATUSES.has(signal.lifecycle?.status || signal.signalState || signal.status));
 
+  const now = new Date().toISOString();
   return {
     signals,
     scanResults: signals,
@@ -38,9 +36,9 @@ async function readScannerSnapshot() {
       readySignals: signals.length,
       waitSignals: 0,
       errorSignals: 0,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     },
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
     recovered: true,
   };
 }
@@ -48,6 +46,12 @@ async function readScannerSnapshot() {
 async function refreshLivePrices(signals) {
   return Promise.all(
     signals.map(async (signal) => {
+      const status = signal.lifecycle?.status || signal.signalState || signal.status;
+
+      // WAIT/ERROR rows already contain the scanner's latest market price.
+      // Only live/published setups need a second ticker lookup.
+      if (!LIVE_STATUSES.has(status) || !signal.symbol) return signal;
+
       try {
         const ticker = await fetchTicker(signal.symbol);
         if (Number.isFinite(ticker?.lastPrice) && ticker.lastPrice > 0) {
@@ -56,6 +60,7 @@ async function refreshLivePrices(signals) {
       } catch (error) {
         console.warn(`⚠️ Live price refresh failed for ${signal.symbol}:`, error.message || error);
       }
+
       return signal;
     }),
   );
@@ -65,22 +70,20 @@ function protectExecutionData(signal) {
   const safeSignal = { ...signal };
   const status = safeSignal.lifecycle?.status || safeSignal.signalState || safeSignal.status;
 
-  // WAIT/ERROR results contain no executable levels. Keep their diagnostic
-  // reason visible so the UI can explain the current engine state.
-  if (status !== "WAIT" && status !== "ERROR") {
-    delete safeSignal.entry;
-    delete safeSignal.stop;
-    delete safeSignal.target;
-    delete safeSignal.entryZone;
-    delete safeSignal.reason;
-  }
+  if (!LIVE_STATUSES.has(status)) return safeSignal;
+
+  delete safeSignal.entry;
+  delete safeSignal.stop;
+  delete safeSignal.target;
+  delete safeSignal.entryZone;
+  delete safeSignal.reason;
 
   if (safeSignal.lifecycle) {
     safeSignal.lifecycle = { ...safeSignal.lifecycle };
     if (Array.isArray(safeSignal.lifecycle.targets)) {
       safeSignal.lifecycle.targets = safeSignal.lifecycle.targets.map((target) => {
         const safeTarget = { ...target };
-        if (status !== "WAIT" && status !== "ERROR") delete safeTarget.price;
+        delete safeTarget.price;
         return safeTarget;
       });
     }
