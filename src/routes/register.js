@@ -1,7 +1,10 @@
 const { db, userRef } = require("../services/firestore");
+const { getAuth } = require("firebase-admin/auth");
+const { app } = require("../config/firebase");
 const {
   deviceRef,
   fingerprintRef,
+  legacyFingerprintRef,
   getClientIp,
   hashIp,
 } = require("../services/device");
@@ -16,8 +19,7 @@ function json(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
-    "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, X-API-Key, X-KitSetups-Device, X-KitSetups-Fingerprint",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-KitSetups-Device, X-KitSetups-Fingerprint",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
   res.end(JSON.stringify(data));
@@ -65,7 +67,7 @@ async function registerRoutes(req, res) {
       });
     }
 
-    if (!fingerprint || typeof fingerprint !== "string" || fingerprint.length < 32) {
+    if (!fingerprint || typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(fingerprint)) {
       return json(res, 400, {
         ok: false,
         error: "Device verification could not be completed.",
@@ -75,9 +77,8 @@ async function registerRoutes(req, res) {
 
     const user = userRef(uid);
     const device = deviceRef(deviceId);
-    const fingerprintRecord = fingerprintRef({
-      platform: fingerprint,
-    });
+    const fingerprintRecord = fingerprintRef(fingerprint);
+    const legacyRecord = legacyFingerprintRef(fingerprint);
 
     try {
       let account;
@@ -85,17 +86,17 @@ async function registerRoutes(req, res) {
       const userAgent = String(req.headers["user-agent"] || "").slice(0, 300);
 
       await db.runTransaction(async (tx) => {
-        const reads = [tx.get(user), tx.get(device)];
-        if (fingerprintRecord) reads.push(tx.get(fingerprintRecord));
-        const [userSnap, deviceSnap, fingerprintSnap] = await Promise.all(reads);
+        const [userSnap, deviceSnap, fingerprintSnap, legacySnap] = await Promise.all([
+          tx.get(user),
+          tx.get(device),
+          fingerprintRecord ? tx.get(fingerprintRecord) : Promise.resolve(null),
+          legacyRecord ? tx.get(legacyRecord) : Promise.resolve(null),
+        ]);
 
         if (userSnap.exists) throw new Error("ACCOUNT_EXISTS");
-
         if (deviceSnap.exists) throw new Error("DEVICE_ALREADY_REGISTERED");
-
-        if (fingerprintSnap?.exists && fingerprintSnap.data()?.uid) {
-          throw new Error("DEVICE_ALREADY_REGISTERED");
-        }
+        if (fingerprintSnap?.exists && fingerprintSnap.data()?.uid) throw new Error("DEVICE_ALREADY_REGISTERED");
+        if (legacySnap?.exists && legacySnap.data()?.uid) throw new Error("DEVICE_ALREADY_REGISTERED");
 
         const now = new Date();
         const createdAt = now.toISOString();
@@ -124,14 +125,22 @@ async function registerRoutes(req, res) {
 
         tx.set(user, account);
         tx.set(device, { uid, createdAt, updatedAt: createdAt });
-        if (fingerprintRecord) {
-          tx.set(fingerprintRecord, {
-            uid,
-            createdAt,
-            updatedAt: createdAt,
-          });
-        }
+        if (fingerprintRecord) tx.set(fingerprintRecord, { uid, createdAt, updatedAt: createdAt });
       });
+
+      // Keep a copy of the trial window in Firebase Auth so account access can
+      // still be reconstructed when Firestore is temporarily unavailable.
+      try {
+        const auth = getAuth(app);
+        const authUser = await auth.getUser(uid);
+        await auth.setCustomUserClaims(uid, {
+          ...(authUser.customClaims || {}),
+          kitsetupsTrialStartedAt: account.trialStartedAt.toISOString(),
+          kitsetupsTrialEndsAt: account.trialEndsAt,
+        });
+      } catch (claimError) {
+        console.warn("⚠️ Trial claim sync unavailable:", claimError.message || claimError);
+      }
 
       const access = getAccessState(account);
       return json(res, 201, {
