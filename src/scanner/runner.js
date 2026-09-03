@@ -2,7 +2,7 @@
 
 const { getUniverse, DEFAULT_UNIVERSE } = require("./universe");
 const { scanSymbol } = require("./scanner");
-const { publishScannerSnapshot, publishScannerReadModel, getScannerSnapshot } = require("./persistence");
+const { publishScannerSnapshot, publishScannerReadModel } = require("./persistence");
 
 const SCAN_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_SCAN_SYMBOLS = 40;
@@ -27,12 +27,6 @@ const scannerRuntime = {
 
 async function processSnapshot(snapshot) {
   if (!snapshot) throw new Error("snapshot is required");
-
-  // Scanning must never depend on Firestore. Lifecycle persistence used to
-  // perform a full collection read for every symbol, turning one 40-symbol
-  // scan into dozens of Firestore reads and causing RESOURCE_EXHAUSTED.
-  // Lifecycle state is now attached only when a durable snapshot is available
-  // and otherwise remains null; the market scanner itself stays authoritative.
   return {
     symbol: snapshot.symbol,
     status: snapshot.status,
@@ -62,7 +56,12 @@ async function runScan(symbols = null) {
   scannerRuntime.persistenceDegraded = false;
 
   const results = [];
-  const BATCH_SIZE = 5;
+
+  // Render's current instance is hitting Node's ~256 MB heap limit when five
+  // symbols are analyzed simultaneously. Each symbol loads five 200-candle
+  // datasets and builds multiple analysis structures. Analyze one symbol at a
+  // time so peak memory stays bounded while retaining the full 40-market scan.
+  const BATCH_SIZE = 1;
 
   for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
     const batch = symbols.slice(i, i + BATCH_SIZE);
@@ -106,8 +105,6 @@ async function runScan(symbols = null) {
     console.log(`🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`);
   }
 
-  // Always publish the completed in-memory result first. Firestore is a
-  // persistence layer, not a dependency of the scanner's data path.
   latestScanResults = results.map((result) => ({
     ...(result.snapshot || {}),
     symbol: result.symbol,
@@ -120,9 +117,6 @@ async function runScan(symbols = null) {
   const signals = latestScanResults.filter((result) => result.valid === true && result.status === "READY");
 
   try {
-    // No per-symbol Firestore lifecycle reads/writes here. Persistence gets a
-    // single read-model write and may fail harmlessly when the project quota is
-    // exhausted; the in-memory broadcast remains available.
     await publishScannerSnapshot(signals, {
       scannedSymbols: results.length,
       publishedSignals: signals.length,
