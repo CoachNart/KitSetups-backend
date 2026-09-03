@@ -6,10 +6,9 @@ function json(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
-    "Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key, X-KitSetups-Device",
-    "Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-KitSetups-Device",
+    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
   });
-
   res.end(JSON.stringify(data));
 }
 
@@ -30,7 +29,6 @@ function inactiveKeyData() {
 
 async function developerRoutes(req, res) {
   if (!req.url.startsWith("/api/developer/key")) return false;
-
   if (req.method === "OPTIONS") return json(res, 204, null);
 
   return requireAuth(req, res, async () => {
@@ -40,11 +38,9 @@ async function developerRoutes(req, res) {
     try {
       if (req.method === "GET") {
         const snap = await ref.get();
-
         if (!snap.exists || snap.data().revokedAt) {
           return json(res, 200, { ok: true, data: inactiveKeyData() });
         }
-
         const data = snap.data();
         return json(res, 200, {
           ok: true,
@@ -61,7 +57,6 @@ async function developerRoutes(req, res) {
 
       if (req.method === "POST") {
         const existing = await ref.get();
-
         if (existing.exists && !existing.data().revokedAt) {
           return json(res, 409, {
             ok: false,
@@ -101,7 +96,6 @@ async function developerRoutes(req, res) {
 
       if (req.method === "DELETE") {
         const existing = await ref.get();
-
         if (!existing.exists || existing.data().revokedAt) {
           return json(res, 404, {
             ok: false,
@@ -112,16 +106,17 @@ async function developerRoutes(req, res) {
 
         const now = new Date().toISOString();
         await ref.update({ revokedAt: now });
+        const data = existing.data();
 
         return json(res, 200, {
           ok: true,
           data: {
             active: false,
-            keyId: existing.data().keyId || uid,
-            prefix: existing.data().prefix || null,
-            createdAt: existing.data().createdAt || null,
-            lastUsedAt: existing.data().lastUsedAt || null,
-            usage: existing.data().usage || { requests: 0 },
+            keyId: data.keyId || uid,
+            prefix: data.prefix || null,
+            createdAt: data.createdAt || null,
+            lastUsedAt: data.lastUsedAt || null,
+            usage: data.usage || { requests: 0 },
           },
         });
       }
@@ -133,15 +128,9 @@ async function developerRoutes(req, res) {
       });
     } catch (error) {
       console.error("DEVELOPER KEY FIRESTORE ERROR:", error.stack || error.message || error);
-
       if (req.method === "GET") {
-        return json(res, 200, {
-          ok: true,
-          degraded: true,
-          data: inactiveKeyData(),
-        });
+        return json(res, 200, { ok: true, degraded: true, data: inactiveKeyData() });
       }
-
       return json(res, 503, {
         ok: false,
         error: "Developer key storage temporarily unavailable",
