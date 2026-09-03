@@ -2,10 +2,7 @@
 
 const { getUniverse, DEFAULT_UNIVERSE } = require("./universe");
 const { scanSymbol } = require("./scanner");
-const {
-  initializeLifecycle,
-  updateLifecycle,
-} = require("../lifecycle/service");
+const { initializeLifecycle, updateLifecycle } = require("../lifecycle/service");
 const {
   publishScannerSnapshot,
   publishScannerReadModel,
@@ -19,6 +16,7 @@ const MAX_SCAN_SYMBOLS = 40;
 
 let scannerLoopRunning = false;
 let scannerLoopTimer = null;
+let latestScanResults = [];
 
 const scannerRuntime = {
   status: "STARTING",
@@ -31,6 +29,7 @@ const scannerRuntime = {
   wait: 0,
   errors: 0,
   nextCycleAt: null,
+  persistenceDegraded: false,
 };
 
 async function processSnapshot(snapshot) {
@@ -91,6 +90,7 @@ async function runScan(symbols = null) {
   scannerRuntime.lastStartedAt = new Date().toISOString();
   scannerRuntime.status = "SCANNING";
   scannerRuntime.lastError = null;
+  scannerRuntime.persistenceDegraded = false;
 
   const results = [];
   const BATCH_SIZE = 5;
@@ -138,25 +138,10 @@ async function runScan(symbols = null) {
     console.log(`🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`);
   }
 
-  const signals = results
-    .filter((result) => result.snapshot && result.snapshot.valid === true && result.snapshot.status === "READY")
-    .map((result) => ({ ...result.snapshot, lifecycle: result.lifecycle || null }));
-
-  if (signals.length > 0) {
-    await publishScannerSnapshot(signals, {
-      scannedSymbols: results.length,
-      publishedSignals: signals.length,
-    });
-  } else {
-    await refreshScannerSnapshot({
-      scannedSymbols: results.length,
-      publishedSignals: 0,
-    });
-  }
-
-  // Always publish the complete scan read-model. A market being WAIT is
-  // legitimate engine output and must not become an empty frontend state.
-  const scanResults = results.map((result) => ({
+  // Keep the latest completed scan in process memory. This is the immediate
+  // broadcast/read path and survives persistence hiccups without changing
+  // authentication or execution rules.
+  latestScanResults = results.map((result) => ({
     ...(result.snapshot || {}),
     symbol: result.symbol,
     status: result.snapshot?.status || result.status,
@@ -165,10 +150,32 @@ async function runScan(symbols = null) {
     reason: result.snapshot?.reason || result.reason || null,
   }));
 
-  await publishScannerReadModel(scanResults, {
-    scannedSymbols: results.length,
-    cycle: Date.now(),
-  });
+  const signals = results
+    .filter((result) => result.snapshot && result.snapshot.valid === true && result.snapshot.status === "READY")
+    .map((result) => ({ ...result.snapshot, lifecycle: result.lifecycle || null }));
+
+  try {
+    if (signals.length > 0) {
+      await publishScannerSnapshot(signals, {
+        scannedSymbols: results.length,
+        publishedSignals: signals.length,
+      });
+    } else {
+      await refreshScannerSnapshot({
+        scannedSymbols: results.length,
+        publishedSignals: 0,
+      });
+    }
+
+    await publishScannerReadModel(latestScanResults, {
+      scannedSymbols: results.length,
+      cycle: Date.now(),
+    });
+  } catch (error) {
+    scannerRuntime.persistenceDegraded = true;
+    scannerRuntime.lastError = error.message || String(error);
+    console.error("⚠️ Scanner persistence unavailable; serving in-memory scan results:", error.stack || error.message || error);
+  }
 
   const ready = results.filter((result) => result.status === "READY").length;
   const wait = results.filter((result) => result.status === "WAIT").length;
@@ -184,12 +191,17 @@ async function runScan(symbols = null) {
   return results;
 }
 
+function getLatestScanResults() {
+  return latestScanResults.map((result) => ({ ...result }));
+}
+
 function getScannerRuntimeStatus() {
   return {
     ...scannerRuntime,
     running: scannerLoopRunning,
     intervalMinutes: SCAN_INTERVAL_MS / 60000,
     maxScanSymbols: MAX_SCAN_SYMBOLS,
+    inMemoryResults: latestScanResults.length,
   };
 }
 
@@ -246,6 +258,7 @@ function stopScannerLoop() {
 module.exports = {
   processSnapshot,
   runScan,
+  getLatestScanResults,
   getScannerRuntimeStatus,
   startScannerLoop,
   stopScannerLoop,
