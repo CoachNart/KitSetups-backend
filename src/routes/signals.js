@@ -3,6 +3,7 @@ const { requireAuth } = require("../middleware/auth");
 const { getAccessState } = require("../services/access");
 const { fetchTicker } = require("../trading/data/marketData");
 const { buildMarketRanking } = require("../services/marketRanking");
+const { getLatestScanResults } = require("../scanner/runner");
 
 const SIGNALS_COLLECTION = "signals";
 const SIGNALS_DOCUMENT = "latest";
@@ -63,38 +64,65 @@ async function buildMarketFallback() {
       change24hPercent: Number(market.price24hPcnt || 0) * 100,
     }));
 
-  marketFallbackCache = {
-    signals,
-    generatedAt: now,
-  };
-
+  marketFallbackCache = { signals, generatedAt: now };
   return signals;
 }
 
 async function readScannerSnapshot() {
-  const latest = await db.collection(SIGNALS_COLLECTION).doc(SIGNALS_DOCUMENT).get();
-  if (latest.exists) return latest.data() || {};
+  try {
+    const latest = await db.collection(SIGNALS_COLLECTION).doc(SIGNALS_DOCUMENT).get();
+    if (latest.exists) return latest.data() || {};
 
-  const published = await db.collection(SIGNALS_COLLECTION).where("published", "==", true).get();
-  const signals = published.docs
-    .map((doc) => ({ ...doc.data(), signalId: doc.data().signalId || doc.id }))
-    .filter((signal) => LIVE_STATUSES.has(signal.lifecycle?.status || signal.signalState || signal.status));
+    const published = await db.collection(SIGNALS_COLLECTION).where("published", "==", true).get();
+    const signals = published.docs
+      .map((doc) => ({ ...doc.data(), signalId: doc.data().signalId || doc.id }))
+      .filter((signal) => LIVE_STATUSES.has(signal.lifecycle?.status || signal.signalState || signal.status));
 
-  const now = new Date().toISOString();
-  return {
-    signals,
-    scanResults: signals,
-    scanner: {
-      status: signals.length > 0 ? "READY" : "WAITING",
-      publishedSignals: signals.length,
-      readySignals: signals.length,
-      waitSignals: 0,
-      errorSignals: 0,
+    const now = new Date().toISOString();
+    return {
+      signals,
+      scanResults: signals,
+      scanner: {
+        status: signals.length > 0 ? "READY" : "WAITING",
+        publishedSignals: signals.length,
+        readySignals: signals.length,
+        waitSignals: 0,
+        errorSignals: 0,
+        updatedAt: now,
+      },
       updatedAt: now,
-    },
-    updatedAt: now,
-    recovered: true,
-  };
+      recovered: true,
+    };
+  } catch (error) {
+    const inMemory = getLatestScanResults();
+
+    if (inMemory.length > 0) {
+      const readySignals = inMemory.filter(
+        (signal) => signal.status === "READY" && signal.valid === true,
+      ).length;
+
+      console.warn("⚠️ Firestore snapshot unavailable; serving latest in-memory scanner results.");
+
+      return {
+        signals: inMemory,
+        scanResults: inMemory,
+        scanner: {
+          status: "DEGRADED",
+          source: "scanner-memory",
+          scannedSymbols: inMemory.length,
+          publishedSignals: readySignals,
+          readySignals,
+          waitSignals: inMemory.filter((signal) => signal.status === "WAIT").length,
+          errorSignals: inMemory.filter((signal) => signal.status === "ERROR").length,
+          updatedAt: new Date().toISOString(),
+        },
+        updatedAt: new Date().toISOString(),
+        recovered: true,
+      };
+    }
+
+    throw error;
+  }
 }
 
 async function ensureScannerData(scannerData) {
@@ -137,7 +165,6 @@ async function refreshLivePrices(signals) {
   return Promise.all(
     signals.map(async (signal) => {
       const status = signal.lifecycle?.status || signal.signalState || signal.status;
-
       if (!LIVE_STATUSES.has(status) || !signal.symbol) return signal;
 
       try {
@@ -186,14 +213,24 @@ async function signalsRoutes(req, res) {
   return requireAuth(req, res, async () => {
     try {
       const uid = req.user.uid;
-      const accountSnap = await userRef(uid).get();
+      let account = null;
 
-      if (!accountSnap.exists) {
-        return json(res, 404, { ok: false, error: "Account not found", code: "ACCOUNT_NOT_FOUND" });
+      try {
+        const accountSnap = await userRef(uid).get();
+        account = accountSnap.exists ? accountSnap.data() : null;
+      } catch (error) {
+        console.warn("⚠️ Account lookup unavailable; continuing in locked mode:", error.message || error);
       }
 
-      const access = getAccessState(accountSnap.data());
-      let scannerData = await readScannerSnapshot();
+      const access = getAccessState(account);
+      let scannerData;
+
+      try {
+        scannerData = await readScannerSnapshot();
+      } catch (error) {
+        scannerData = await ensureScannerData({});
+      }
+
       scannerData = await ensureScannerData(scannerData);
 
       const sourceSignals = Array.isArray(scannerData.scanResults)
@@ -220,7 +257,11 @@ async function signalsRoutes(req, res) {
       });
     } catch (error) {
       console.error("❌ Signals route failed:", error.stack || error.message || error);
-      return json(res, 500, { ok: false, error: "Failed to load market signals", code: "SIGNALS_FETCH_FAILED" });
+      return json(res, 500, {
+        ok: false,
+        error: "Failed to load market signals",
+        code: "SIGNALS_FETCH_FAILED",
+      });
     }
   });
 }
