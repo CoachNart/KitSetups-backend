@@ -13,54 +13,31 @@ function json(res, status, data) {
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-KitSetups-Device",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
-
   res.end(JSON.stringify(data));
 }
 
 async function readScannerSnapshot() {
-  const latest = await db
-    .collection(SIGNALS_COLLECTION)
-    .doc(SIGNALS_DOCUMENT)
-    .get();
+  const latest = await db.collection(SIGNALS_COLLECTION).doc(SIGNALS_DOCUMENT).get();
 
-  if (latest.exists) {
-    return latest.data() || {};
-  }
+  if (latest.exists) return latest.data() || {};
 
-  // Recovery path: older deployments can have published signal documents
-  // without the aggregate `signals/latest` snapshot. Rebuild the read model
-  // instead of making the entire frontend look empty.
-  const published = await db
-    .collection(SIGNALS_COLLECTION)
-    .where("published", "==", true)
-    .get();
-
+  const published = await db.collection(SIGNALS_COLLECTION).where("published", "==", true).get();
   const signals = published.docs
-    .map((doc) => ({
-      ...doc.data(),
-      signalId: doc.data().signalId || doc.id,
-    }))
+    .map((doc) => ({ ...doc.data(), signalId: doc.data().signalId || doc.id }))
     .filter((signal) => {
-      const status =
-        signal.lifecycle?.status ||
-        signal.signalState ||
-        signal.status;
-
-      return [
-        "READY",
-        "ENTRY_HIT",
-        "ACTIVE",
-        "TP1_HIT",
-        "TP2_HIT",
-        "TP3_HIT",
-      ].includes(status);
+      const status = signal.lifecycle?.status || signal.signalState || signal.status;
+      return ["READY", "ENTRY_HIT", "ACTIVE", "TP1_HIT", "TP2_HIT", "TP3_HIT"].includes(status);
     });
 
   return {
     signals,
+    scanResults: signals,
     scanner: {
       status: signals.length > 0 ? "READY" : "WAITING",
       publishedSignals: signals.length,
+      readySignals: signals.length,
+      waitSignals: 0,
+      errorSignals: 0,
       updatedAt: new Date().toISOString(),
     },
     updatedAt: new Date().toISOString(),
@@ -73,23 +50,12 @@ async function refreshLivePrices(signals) {
     signals.map(async (signal) => {
       try {
         const ticker = await fetchTicker(signal.symbol);
-
-        if (
-          Number.isFinite(ticker?.lastPrice) &&
-          ticker.lastPrice > 0
-        ) {
-          return {
-            ...signal,
-            price: ticker.lastPrice,
-          };
+        if (Number.isFinite(ticker?.lastPrice) && ticker.lastPrice > 0) {
+          return { ...signal, price: ticker.lastPrice };
         }
       } catch (error) {
-        console.warn(
-          `⚠️ Live price refresh failed for ${signal.symbol}:`,
-          error.message || error,
-        );
+        console.warn(`⚠️ Live price refresh failed for ${signal.symbol}:`, error.message || error);
       }
-
       return signal;
     }),
   );
@@ -97,24 +63,26 @@ async function refreshLivePrices(signals) {
 
 function protectExecutionData(signal) {
   const safeSignal = { ...signal };
+  const status = safeSignal.lifecycle?.status || safeSignal.signalState || safeSignal.status;
 
-  delete safeSignal.entry;
-  delete safeSignal.stop;
-  delete safeSignal.target;
-  delete safeSignal.entryZone;
-  delete safeSignal.reason;
+  // WAIT/ERROR results contain no executable levels. Keep their diagnostic
+  // reason visible so the UI can explain the current engine state.
+  if (status !== "WAIT" && status !== "ERROR") {
+    delete safeSignal.entry;
+    delete safeSignal.stop;
+    delete safeSignal.target;
+    delete safeSignal.entryZone;
+    delete safeSignal.reason;
+  }
 
   if (safeSignal.lifecycle) {
     safeSignal.lifecycle = { ...safeSignal.lifecycle };
-
     if (Array.isArray(safeSignal.lifecycle.targets)) {
-      safeSignal.lifecycle.targets = safeSignal.lifecycle.targets.map(
-        (target) => {
-          const safeTarget = { ...target };
-          delete safeTarget.price;
-          return safeTarget;
-        },
-      );
+      safeSignal.lifecycle.targets = safeSignal.lifecycle.targets.map((target) => {
+        const safeTarget = { ...target };
+        if (status !== "WAIT" && status !== "ERROR") delete safeTarget.price;
+        return safeTarget;
+      });
     }
   }
 
@@ -122,9 +90,7 @@ function protectExecutionData(signal) {
 }
 
 async function signalsRoutes(req, res) {
-  if (req.method !== "GET" || !req.url.startsWith("/api/signals")) {
-    return false;
-  }
+  if (req.method !== "GET" || !req.url.startsWith("/api/signals")) return false;
 
   return requireAuth(req, res, async () => {
     try {
@@ -132,20 +98,18 @@ async function signalsRoutes(req, res) {
       const accountSnap = await userRef(uid).get();
 
       if (!accountSnap.exists) {
-        return json(res, 404, {
-          ok: false,
-          error: "Account not found",
-          code: "ACCOUNT_NOT_FOUND",
-        });
+        return json(res, 404, { ok: false, error: "Account not found", code: "ACCOUNT_NOT_FOUND" });
       }
 
       const access = getAccessState(accountSnap.data());
       const scannerData = await readScannerSnapshot();
-      const rawSignals = Array.isArray(scannerData.signals)
-        ? scannerData.signals
-        : [];
+      const sourceSignals = Array.isArray(scannerData.scanResults)
+        ? scannerData.scanResults
+        : Array.isArray(scannerData.signals)
+          ? scannerData.signals
+          : [];
 
-      const responseSignals = await refreshLivePrices(rawSignals);
+      const responseSignals = await refreshLivePrices(sourceSignals);
       const safeSignals = access.hasAccess
         ? responseSignals
         : responseSignals.map(protectExecutionData);
@@ -155,26 +119,17 @@ async function signalsRoutes(req, res) {
         data: {
           ...scannerData,
           signals: safeSignals,
+          scanResults: safeSignals,
           access,
           subscribeRequired: !access.hasAccess,
           scanner: scannerData.scanner || null,
         },
       });
     } catch (error) {
-      console.error(
-        "❌ Signals route failed:",
-        error.stack || error.message || error,
-      );
-
-      return json(res, 500, {
-        ok: false,
-        error: "Failed to load market signals",
-        code: "SIGNALS_FETCH_FAILED",
-      });
+      console.error("❌ Signals route failed:", error.stack || error.message || error);
+      return json(res, 500, { ok: false, error: "Failed to load market signals", code: "SIGNALS_FETCH_FAILED" });
     }
   });
 }
 
-module.exports = {
-  signalsRoutes,
-};
+module.exports = { signalsRoutes };
