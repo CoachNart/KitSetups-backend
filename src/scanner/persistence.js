@@ -25,6 +25,62 @@ function legacySetupIdentity(signal) {
   ].join("|");
 }
 
+function isLiveLifecycleSignal(signal) {
+  const status =
+    signal.lifecycle?.status ||
+    signal.signalState ||
+    signal.status;
+
+  return [
+    "READY",
+    "ENTRY_HIT",
+    "ACTIVE",
+    "TP1_HIT",
+    "TP2_HIT",
+    "TP3_HIT",
+  ].includes(status);
+}
+
+async function getPublishedActiveSignals() {
+  const published = await db
+    .collection(COLLECTION)
+    .where("published", "==", true)
+    .get();
+
+  return published.docs
+    .map((doc) => ({
+      ...doc.data(),
+      signalId: doc.data().signalId || doc.id,
+    }))
+    .filter(isLiveLifecycleSignal);
+}
+
+async function writeScannerSnapshot(activeSignals, metadata = {}, options = {}) {
+  const now = new Date().toISOString();
+  const existing = options.merge ? { ...(options.previous || {}) } : {};
+
+  const payload = {
+    ...existing,
+    signals: activeSignals,
+    scanner: {
+      ...(existing.scanner || {}),
+      cycle: metadata.cycle ?? existing.scanner?.cycle ?? Date.now(),
+      scannedSymbols:
+        metadata.scannedSymbols ?? existing.scanner?.scannedSymbols ?? 0,
+      publishedSignals: activeSignals.length,
+      status: activeSignals.length > 0 ? "READY" : "WAITING",
+      updatedAt: now,
+    },
+    updatedAt: now,
+  };
+
+  await db.collection(COLLECTION).doc(DOCUMENT).set(payload, {
+    merge: Boolean(options.merge),
+  });
+
+  return payload;
+}
+
 async function publishScannerSnapshot(signals, metadata = {}) {
   if (!Array.isArray(signals)) {
     throw new Error("signals must be an array");
@@ -76,53 +132,18 @@ async function publishScannerSnapshot(signals, metadata = {}) {
           publishedAt: previous.publishedAt || publishedAt,
           updatedAt: publishedAt,
         },
-        { merge: true }
+        { merge: true },
       );
   }
 
-  const published = await db
-    .collection(COLLECTION)
-    .where("published", "==", true)
-    .get();
+  const activeSignals = await getPublishedActiveSignals();
 
-  const activeSignals = published.docs
-    .map((doc) => ({
-      ...doc.data(),
-      signalId: doc.data().signalId || doc.id,
-    }))
-    .filter((signal) => {
-      const status =
-        signal.lifecycle?.status ||
-        signal.signalState ||
-        signal.status;
+  return writeScannerSnapshot(activeSignals, metadata);
+}
 
-      return (
-        status === "READY" ||
-        status === "ENTRY_HIT" ||
-        status === "ACTIVE" ||
-        status === "TP1_HIT" ||
-        status === "TP2_HIT"
-      );
-    });
-
-  const payload = {
-    signals: activeSignals,
-    scanner: {
-      cycle: metadata.cycle ?? Date.now(),
-      scannedSymbols: metadata.scannedSymbols ?? 0,
-      publishedSignals: activeSignals.length,
-      status: "READY",
-      updatedAt: publishedAt,
-    },
-    updatedAt: publishedAt,
-  };
-
-  await db
-    .collection(COLLECTION)
-    .doc(DOCUMENT)
-    .set(payload);
-
-  return payload;
+async function refreshScannerSnapshot(metadata = {}) {
+  const activeSignals = await getPublishedActiveSignals();
+  return writeScannerSnapshot(activeSignals, metadata);
 }
 
 async function getPublishedSetupForSymbol(symbol) {
@@ -138,22 +159,8 @@ async function getPublishedSetupForSymbol(symbol) {
       ...doc.data(),
       signalId: doc.data().signalId || doc.id,
     }))
-    .filter((signal) => {
-      if (signal.symbol !== symbol) return false;
-
-      const status =
-        signal.lifecycle?.status ||
-        signal.signalState ||
-        signal.status;
-
-      return (
-        status === "READY" ||
-        status === "ENTRY_HIT" ||
-        status === "ACTIVE" ||
-        status === "TP1_HIT" ||
-        status === "TP2_HIT"
-      );
-    });
+    .filter((signal) => signal.symbol === symbol)
+    .filter(isLiveLifecycleSignal);
 
   return matches[0] || null;
 }
@@ -193,49 +200,18 @@ async function updatePublishedLifecycle(signal, lifecycle) {
       signalState: lifecycle.status || null,
       updatedAt: now,
     },
-    { merge: true }
+    { merge: true },
   );
 
-  const published = await db
-    .collection(COLLECTION)
-    .where("published", "==", true)
-    .get();
+  const activeSignals = await getPublishedActiveSignals();
 
-  const activeSignals = published.docs
-    .map((doc) => ({
-      ...doc.data(),
-      signalId: doc.data().signalId || doc.id,
-    }))
-    .filter((signal) => {
-      const status =
-        signal.lifecycle?.status ||
-        signal.signalState ||
-        signal.status;
-
-      return (
-        status === "READY" ||
-        status === "ENTRY_HIT" ||
-        status === "ACTIVE" ||
-        status === "TP1_HIT" ||
-        status === "TP2_HIT"
-      );
-    });
-
-  await db
-    .collection(COLLECTION)
-    .doc(DOCUMENT)
-    .set(
-      {
-        signals: activeSignals,
-        scanner: {
-          status: "READY",
-          publishedSignals: activeSignals.length,
-          updatedAt: now,
-        },
-        updatedAt: now,
-      },
-      { merge: true }
-    );
+  await writeScannerSnapshot(
+    activeSignals,
+    {
+      publishedSignals: activeSignals.length,
+    },
+    { merge: true },
+  );
 
   return {
     ...existing.data(),
@@ -256,6 +232,7 @@ async function getScannerSnapshot() {
 
 module.exports = {
   publishScannerSnapshot,
+  refreshScannerSnapshot,
   updatePublishedLifecycle,
   getPublishedSetupForSymbol,
   getScannerSnapshot,
