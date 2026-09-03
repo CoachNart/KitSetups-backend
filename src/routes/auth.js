@@ -18,7 +18,10 @@ function json(res, status, data) {
 }
 
 function authFallback(uid, authUser) {
-  const created = authUser?.metadata?.creationTime;
+  const claims = authUser?.customClaims || {};
+  const created = authUser?.metadata?.creationTime || null;
+  const trialStartedAt = claims.kitsetupsTrialStartedAt || created;
+  const trialEndsAt = claims.kitsetupsTrialEndsAt || (trialStartedAt ? addDays(trialStartedAt, TRIAL_DAYS)?.toISOString() : null);
   const account = {
     id: uid,
     email: authUser?.email || "",
@@ -26,9 +29,9 @@ function authFallback(uid, authUser) {
     photoURL: authUser?.photoURL || null,
     plan: "free",
     planName: "Free",
-    trialStartedAt: created || null,
-    createdAt: created || null,
-    trialEndsAt: created ? addDays(created, TRIAL_DAYS)?.toISOString() : null,
+    trialStartedAt,
+    createdAt: created || trialStartedAt,
+    trialEndsAt,
   };
   const access = getAccessState(account);
   return {
