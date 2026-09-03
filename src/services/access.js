@@ -25,11 +25,15 @@ function addDays(date, days) {
 function resolveTrialExpiry(account) {
   const startedAt = toDate(account?.trialStartedAt);
   const storedEndsAt = toDate(account?.trialEndsAt);
+  const calculatedEndsAt = startedAt ? addDays(startedAt, TRIAL_DAYS) : null;
 
-  // Once a trial has a canonical start timestamp, its expiry is deterministic.
-  // Never let a stale/malformed trialEndsAt shorten or extend the trial.
-  if (startedAt) return addDays(startedAt, TRIAL_DAYS);
-  return storedEndsAt;
+  // Keep the previously established trial window intact. Older account
+  // records can contain a valid trialEndsAt that is later than the derived
+  // timestamp; never shorten that existing access window.
+  if (calculatedEndsAt && storedEndsAt) {
+    return new Date(Math.max(calculatedEndsAt.getTime(), storedEndsAt.getTime()));
+  }
+  return calculatedEndsAt || storedEndsAt;
 }
 
 function trialAccess(account, now) {
@@ -72,8 +76,8 @@ function getAccessState(account) {
       };
     }
 
-    // If an expired premium record still has an unexpired original trial,
-    // preserve the trial rather than locking the account prematurely.
+    // Preserve an unexpired original trial if a premium subscription has
+    // subsequently expired.
     const trial = trialAccess(account, now);
     if (trial?.hasAccess) return trial;
 
