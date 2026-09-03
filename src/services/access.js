@@ -29,6 +29,22 @@ function addDays(date, days) {
   return new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
+function resolveTrialExpiry(account) {
+  const startedAt = toDate(account?.trialStartedAt);
+  const storedEndsAt = toDate(account?.trialEndsAt);
+  const calculatedEndsAt = startedAt ? addDays(startedAt, TRIAL_DAYS) : null;
+
+  // trialStartedAt is the canonical start of the free trial. If an older or
+  // malformed trialEndsAt says the trial is already expired while the
+  // canonical 3-day window is still active, use the canonical expiry instead.
+  // When both values are valid, never shorten the canonical trial window.
+  if (calculatedEndsAt && storedEndsAt) {
+    return new Date(Math.max(calculatedEndsAt.getTime(), storedEndsAt.getTime()));
+  }
+
+  return calculatedEndsAt || storedEndsAt;
+}
+
 function getAccessState(account) {
   const now = new Date();
 
@@ -64,10 +80,8 @@ function getAccessState(account) {
     };
   }
 
-  if (account.trialStartedAt) {
-    const trialEndsAt =
-      toDate(account.trialEndsAt) ||
-      addDays(account.trialStartedAt, TRIAL_DAYS);
+  if (account.trialStartedAt || account.trialEndsAt) {
+    const trialEndsAt = resolveTrialExpiry(account);
 
     if (trialEndsAt && trialEndsAt > now) {
       return {
