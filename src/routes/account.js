@@ -7,7 +7,7 @@ function json(res, status, data) {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
     "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, X-API-Key",
+      "Content-Type, Authorization, X-API-Key, X-KitSetups-Device",
     "Access-Control-Allow-Methods":
       "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
@@ -22,35 +22,53 @@ async function accountRoutes(req, res) {
 
   return requireAuth(req, res, async () => {
     const uid = req.user.uid;
-    const ref = userRef(uid);
-    const snap = await ref.get();
 
-    if (!snap.exists) {
-      return json(res, 404, {
-        ok: false,
-        error: "Account not found",
-        code: "ACCOUNT_NOT_FOUND",
+    try {
+      const ref = userRef(uid);
+      const snap = await ref.get();
+
+      if (!snap.exists) {
+        return json(res, 404, {
+          ok: false,
+          error: "Account not found",
+          code: "ACCOUNT_NOT_FOUND",
+        });
+      }
+
+      const data = snap.data();
+      const access = getAccessState(data);
+
+      return json(res, 200, {
+        ok: true,
+        data: {
+          ...data,
+          id: uid,
+          trialActive: access.status === "TRIAL_ACTIVE",
+          accessLocked: access.accessLocked,
+          accessStatus: access.status,
+          accessExpiresAt: access.expiresAt,
+          access,
+        },
+      });
+    } catch (error) {
+      console.error("ACCOUNT FIRESTORE ERROR:", error.stack || error.message || error);
+
+      const access = getAccessState(null);
+
+      return json(res, 200, {
+        ok: true,
+        degraded: true,
+        data: {
+          id: uid,
+          plan: "free",
+          trialActive: false,
+          accessLocked: true,
+          accessStatus: "ACCOUNT_UNAVAILABLE",
+          accessExpiresAt: null,
+          access,
+        },
       });
     }
-
-    const data = snap.data();
-    const access = getAccessState(data);
-
-    return json(res, 200, {
-      ok: true,
-      data: {
-        ...data,
-        id: uid,
-
-        // Live access state calculated from current time
-        // and the persisted trial/subscription dates.
-        trialActive: access.status === "TRIAL_ACTIVE",
-        accessLocked: access.accessLocked,
-        accessStatus: access.status,
-        accessExpiresAt: access.expiresAt,
-        access,
-      },
-    });
   });
 }
 
