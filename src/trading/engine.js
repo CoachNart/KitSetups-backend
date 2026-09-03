@@ -59,13 +59,18 @@ function directionCandidates({ context, structures, liquidity, momentum }) {
     const macro = ['1w', '1d', '4h'].filter((tf) => directional(structures?.[tf], direction)).length;
     const execution = ['1h', '30m'].filter((tf) => directional(structures?.[tf], direction)).length;
     const momentumVotes = ['1h', '30m'].filter((tf) => momentum?.timeframes?.[tf]?.direction === expected).length;
-    const break = latestDirectionalBreak(structures, direction);
+    const directionalBreak = latestDirectionalBreak(structures, direction);
     const sweep = latestOpposingSweep(liquidity, direction);
     const contextBias = context?.bias === expected;
-    const recentBreak = break ? number(break.event.index) : -1;
+    const recentBreak = directionalBreak ? number(directionalBreak.event.index) : -1;
     const recentSweep = sweep ? number(sweep.candleIndex) : -1;
-    const reversal = Boolean(break && sweep && recentBreak >= recentSweep && break.event.kind === 'CHoCH');
-    const continuation = Boolean(break && (!sweep || recentBreak >= recentSweep));
+    const reversal = Boolean(
+      directionalBreak &&
+      sweep &&
+      recentBreak >= recentSweep &&
+      directionalBreak.event.kind === 'CHoCH',
+    );
+    const continuation = Boolean(directionalBreak && (!sweep || recentBreak >= recentSweep));
     const pullback = macro >= 2 && execution >= 1;
 
     let type = null;
@@ -75,7 +80,7 @@ function directionCandidates({ context, structures, liquidity, momentum }) {
 
     if (!type) return null;
 
-    let structuralScore = macro * 18 + execution * 14 + (break ? 18 : 0) + (contextBias ? 12 : 0);
+    let structuralScore = macro * 18 + execution * 14 + (directionalBreak ? 18 : 0) + (contextBias ? 12 : 0);
     if (reversal) structuralScore += 6;
     if (sweep) structuralScore += 6;
     if (context?.regime === 'trending' && continuation) structuralScore += 5;
@@ -88,7 +93,7 @@ function directionCandidates({ context, structures, liquidity, momentum }) {
       macro,
       execution,
       momentumVotes,
-      break,
+      break: directionalBreak,
       sweep,
       contextBias,
       reasons: [
