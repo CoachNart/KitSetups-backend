@@ -32,12 +32,22 @@ function hashDeviceId(deviceId) {
 }
 
 function hashFingerprint(fingerprint) {
-  // The web client already sends a SHA-256 fingerprint. Treat a 64-character
-  // hex value as the canonical hash instead of hashing it again through an
-  // object-shaped legacy representation.
+  // The web client sends a SHA-256 string. The registration route currently
+  // wraps that string as { platform: fingerprint }, so recognize both forms
+  // and use the client hash itself as the canonical Firestore document key.
   if (typeof fingerprint === "string" && /^[a-f0-9]{64}$/i.test(fingerprint)) {
     return fingerprint.toLowerCase();
   }
+
+  if (
+    fingerprint &&
+    typeof fingerprint === "object" &&
+    typeof fingerprint.platform === "string" &&
+    /^[a-f0-9]{64}$/i.test(fingerprint.platform)
+  ) {
+    return fingerprint.platform.toLowerCase();
+  }
+
   const normalized = normalizeFingerprint(fingerprint);
   return normalized ? digest(normalized) : "";
 }
