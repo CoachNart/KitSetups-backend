@@ -1,21 +1,276 @@
 'use strict';
-const {getMarketData}=require('./data/marketData');
-const {analyzeContext}=require('./analysis/context');
-const {analyzeAllStructures}=require('./analysis/structure');
-const {analyzeAllLiquidity}=require('./analysis/liquidity');
-const {analyzeMomentum}=require('./analysis/momentum');
-const {createWaitResult,createSetupResult,validatePriceLevels,calculateRiskReward}=require('./contract');
-const n=v=>Number(v), finite=v=>Number.isFinite(n(v));
-function wait(symbol,price,stage,reason,p){return createWaitResult({symbol,price,stage,reasons:[reason],context:p?.context,structures:p?.structures,liquidity:p?.liquidity,momentum:p?.momentum})}
-function directional(x,d){return x?.direction===(d==='LONG'?'bullish':'bearish')}
-function latestBreak(s,d){return ['30m','1h','4h','1d'].map(tf=>({tf,b:s?.[tf]?.breaks?.latest})).filter(x=>x.b&&x.b.direction===(d==='LONG'?'bullish':'bearish')).sort((a,b)=>n(b.b.index)-n(a.b.index))[0]||null}
-function latestSweep(l,d){const side=d==='LONG'?'sell_side':'buy_side';return ['30m','1h','4h','1d'].flatMap(tf=>(l?.[tf]?.sweeps||[]).map(x=>({...x,timeframe:tf}))).filter(x=>x.side===side).sort((a,b)=>new Date(b.time||0)-new Date(a.time||0))[0]||null}
-function chooseSetup({context,structures,liquidity,momentum}){const bias=context.bias==='bullish'?'LONG':context.bias==='bearish'?'SHORT':null,c=[];for(const d of ['LONG','SHORT']){const macro=['1w','1d','4h'].filter(tf=>directional(structures[tf],d)).length,exec=['1h','30m'].filter(tf=>directional(structures[tf],d)).length,mom=['1h','30m'].filter(tf=>momentum?.timeframes?.[tf]?.direction===(d==='LONG'?'bullish':'bearish')).length,br=latestBreak(structures,d),sw=latestSweep(liquidity,d),range=['ranging','consolidating'].includes(context.regime);let type=null,base=0,reasons=[];if(sw&&br&&new Date(br.b.time||0)>=new Date(sw.time||0)){type='REVERSAL';base=34;reasons.push(`${sw.timeframe} liquidity sweep followed by ${br.b.kind}`)}else if(br){type='CONTINUATION';base=28;reasons.push(`${br.tf} ${br.b.kind} confirms directional structure`)}else if(range&&sw){type='RANGE_REVERSAL';base=28;reasons.push('Range liquidity sweep offers a reversal location')}else if(macro>=2&&exec>=1){type='PULLBACK';base=24;reasons.push('Directional structure supports a pullback opportunity')}if(!type)continue;let score=base+macro*7+exec*6+mom*5+(bias===d?12:0)+(sw?8:0);if(context.regime==='trending'&&type==='CONTINUATION')score+=7;if(context.regime==='transitioning'&&type==='REVERSAL')score+=8;if(context.regime==='expanding')score+=3;if(macro===0)score-=10;if(exec===0)score-=5;c.push({direction:d,type,score:Math.min(100,score),break:br,sweep:sw,macro,exec,mom,reasons})}c.sort((a,b)=>b.score-a.score);return c[0]||null}
-function chooseEntry({price,setup,structures}){const d=setup.direction,br=setup.break?.b;if(setup.sweep&&br){const level=n(br.level);if(Math.abs(price-level)/(Math.abs(price)||1)<.012)return{price,mode:'retest',reference:{timeframe:setup.break.tf,level,type:br.kind},reason:'Price is interacting with the confirmed structural level after the liquidity event'};}if(br){const level=n(br.level);if((d==='LONG'&&price>level)||(d==='SHORT'&&price<level))return{price,mode:'continuation',reference:{timeframe:setup.break.tf,level,type:br.kind},reason:`Price remains beyond the ${br.kind} level`};}const sw=d==='LONG'?structures['30m']?.latest?.low:structures['30m']?.latest?.high;if(sw&&finite(sw.price)&&Math.abs(price-n(sw.price))/(Math.abs(price)||1)<.008)return{price,mode:'pullback',reference:{timeframe:'30m',level:n(sw.price)},reason:'Price is near the latest execution swing'};return null}
-function chooseStop({entry,setup,structures}){const d=setup.direction,keys=d==='LONG'?['30m','1h','4h'].map(tf=>({tf,p:structures[tf]?.protectedLow?.price})):['30m','1h','4h'].map(tf=>({tf,p:structures[tf]?.protectedHigh?.price}));const c=keys.filter(x=>finite(x.p)&&(d==='LONG'?n(x.p)<entry:n(x.p)>entry));if(!c.length)return null;const x=c[0];return{stop:n(x.p),reference:{timeframe:x.tf,structuralLevel:n(x.p)},reason:d==='LONG'?`Structural invalidation below the ${x.tf} protected low`:`Structural invalidation above the ${x.tf} protected high`}}
-function chooseTargets({entry,stop,direction,liquidity}){const d=[];for(const tf of ['30m','1h','4h','1d','1w'])for(const x of (direction==='LONG'?liquidity?.[tf]?.buySide:liquidity?.[tf]?.sellSide)||[]){const p=n(x.price);if(!finite(p)||x.swept===true||(direction==='LONG'?p<=entry:p>=entry))continue;const rr=calculateRiskReward({entry,stop,target:p});if(rr)d.push({...x,price:p,timeframe:tf,riskReward:rr})}return[...new Map(d.map(x=>[`${x.price.toFixed(8)}:${x.side}`,x])).values()].sort((a,b)=>direction==='LONG'?a.price-b.price:b.price-a.price).slice(0,3)}
-function score({setup,context,structures,momentum,entry,stop,targets}){const d=setup.direction,exp=d==='LONG'?'bullish':'bearish',macro=['1w','1d','4h'].filter(tf=>directional(structures[tf],d)).length,exec=['1h','30m'].filter(tf=>directional(structures[tf],d)).length,mom=['1h','30m'].filter(tf=>momentum?.timeframes?.[tf]?.direction===exp).length,rr=targets[0]?.riskReward||0,riskPct=Math.abs(entry-stop)/(entry||1),liq=targets.length?Math.min(100,45+targets.filter(t=>t.liquidityClass==='external').length*20):0;const components={higherTimeframe:macro/3*22,executionStructure:exec/2*15,liquidity:liq*.18,entryQuality:setup.score*.15,momentum:mom/2*12,regime:context.regime==='unknown'?4:context.regime==='expanding'?8:12,stopQuality:riskPct<.025?10:riskPct<.05?7:4,targetQuality:targets.length?8:0,rr:rr>=3?10:rr>=2?8:rr>=1.5?5:0,freshness:setup.break||setup.sweep?6:2,structuralClarity:Math.round((structures['30m']?.clarity||0)*.05)};let total=Math.round(Object.values(components).reduce((a,b)=>a+b,0));const bias=context.bias==='bullish'?'LONG':context.bias==='bearish'?'SHORT':null;if(bias&&bias!==d)total=Math.max(0,total-6);return{score:Math.min(100,total),grade:total>=90?'A+':total>=80?'A':total>=68?'B':total>=56?'C':'D',confidence:total>=80?'High conviction':total>=68?'Strong':total>=56?'Moderate':'Low',components,reasons:[...setup.reasons,macro===3?'Higher-timeframe structure is aligned':`${macro}/3 higher timeframes support the direction`,`${exec}/2 execution timeframes support the direction`,`${mom}/2 execution momentum readings support the direction`,rr?`${rr.toFixed(2)}R to TP1`:'Target quality is limited']}}
-function buildFinal({marketData,context,structures,liquidity,momentum,setup,entry,stop,targets,quality}){const v=validatePriceLevels({direction:setup.direction,entry,stop,targets});if(!v.valid)return wait(marketData.symbol,marketData.ticker.lastPrice,'finalValidation',v.reason,{context,structures,liquidity,momentum});const thesis={structural:`${setup.type} built from ${setup.reasons[0]||'current structure'}.`,liquidity:setup.sweep?'Recent opposing liquidity was swept before the structural response.':targets[0]?'Unswept directional liquidity provides the objective.':'Liquidity is present but limited.',entry:`Entry is derived from the ${setup.type.toLowerCase()} model and current chart price.`,invalidation:`Setup invalidates at ${stop}.`};return createSetupResult({symbol:marketData.symbol,price:marketData.ticker.lastPrice,direction:setup.direction,setupType:setup.type,timeframe:setup.break?.tf||'30m',marketRegime:context.regime,entry,stop,targets,quality,thesis,reasons:quality.reasons,context,structures,liquidity,momentum})}
-async function analyzeSymbol(symbol){if(!symbol)throw new Error('symbol is required');const md=await getMarketData(symbol),price=n(md?.ticker?.lastPrice);if(!finite(price))return wait(symbol,null,'marketData','Invalid market price');const context=analyzeContext(md),structures=analyzeAllStructures(md),liquidity=analyzeAllLiquidity(md,structures),momentum=analyzeMomentum(md.timeframes);const missing=['1w','1d','4h','1h','30m'].filter(tf=>!structures[tf]?.valid);if(missing.length>2)return wait(symbol,price,'data',`Insufficient closed-candle data on ${missing.join(', ')}`,{context,structures,liquidity,momentum});const setup=chooseSetup({context,structures,liquidity,momentum});if(!setup)return wait(symbol,price,'decision','No sufficiently coherent opportunity across structure, liquidity, momentum and context',{context,structures,liquidity,momentum});const entry=chooseEntry({price,setup,structures});if(!entry)return wait(symbol,price,'entry',`The ${setup.type.toLowerCase()} thesis is present, but price has not reached a chart-derived entry location`,{context,structures,liquidity,momentum});const stop=chooseStop({entry:entry.price,setup,structures});if(!stop)return wait(symbol,price,'invalidation','No logical structural invalidation level is available on the correct side of entry',{context,structures,liquidity,momentum});const targets=chooseTargets({entry:entry.price,stop:stop.stop,direction:setup.direction,liquidity});if(!targets.length)return wait(symbol,price,'targets','No meaningful unswept directional liquidity remains for a target',{context,structures,liquidity,momentum});const quality=score({setup,context,structures,momentum,entry:entry.price,stop:stop.stop,targets});if(quality.score<56)return wait(symbol,price,'quality','The trade thesis is coherent but its combined evidence is not strong enough to publish',{context,structures,liquidity,momentum});return buildFinal({marketData:md,context,structures,liquidity,momentum,setup,entry:entry.price,stop:stop.stop,targets,quality})}
-function buildFinalSetup(args){return buildFinal(args)}
-module.exports={analyzeSymbol,buildFinalSetup,reject:wait,LIVE_STATUSES:['READY','ENTRY_HIT','ACTIVE','TP1_HIT','TP2_HIT','TP3_HIT']};
+
+const { getMarketData } = require('./data/marketData');
+const { analyzeContext } = require('./analysis/context');
+const { analyzeAllStructures } = require('./analysis/structure');
+const { analyzeAllLiquidity } = require('./analysis/liquidity');
+const { analyzeMomentum } = require('./analysis/momentum');
+const { calculateEntry } = require('./setup/entry');
+const { calculateStop } = require('./setup/stop');
+const { buildTargets } = require('./setup/targets');
+const { scoreSetup } = require('./quality/scorer');
+const { createWaitResult, createSetupResult, validatePriceLevels } = require('./contract');
+
+const TIMEFRAMES = ['1w', '1d', '4h', '1h', '30m'];
+const PUBLISH_THRESHOLD = 70;
+
+const finite = (v) => Number.isFinite(Number(v));
+const number = (v) => Number(v);
+
+function wait(symbol, price, stage, reason, analysis) {
+  return createWaitResult({
+    symbol,
+    price,
+    stage,
+    reasons: [reason],
+    context: analysis?.context,
+    structures: analysis?.structures,
+    liquidity: analysis?.liquidity,
+    momentum: analysis?.momentum,
+  });
+}
+
+function expectedDirection(direction) {
+  return direction === 'LONG' ? 'bullish' : 'bearish';
+}
+
+function directional(structure, direction) {
+  return structure?.direction === expectedDirection(direction);
+}
+
+function latestDirectionalBreak(structures, direction) {
+  return TIMEFRAMES
+    .map((timeframe) => ({ timeframe, event: structures?.[timeframe]?.breaks?.latest }))
+    .filter(({ event }) => event?.direction === expectedDirection(direction) && finite(event.level))
+    .sort((a, b) => number(b.event.index) - number(a.event.index))[0] || null;
+}
+
+function latestOpposingSweep(liquidity, direction) {
+  const side = direction === 'LONG' ? 'sell_side' : 'buy_side';
+  return TIMEFRAMES
+    .flatMap((timeframe) => (liquidity?.[timeframe]?.sweeps || []).map((sweep) => ({ ...sweep, timeframe })))
+    .filter((sweep) => sweep.side === side)
+    .sort((a, b) => number(b.candleIndex) - number(a.candleIndex))[0] || null;
+}
+
+function directionCandidates({ context, structures, liquidity, momentum }) {
+  return ['LONG', 'SHORT'].map((direction) => {
+    const expected = expectedDirection(direction);
+    const macro = ['1w', '1d', '4h'].filter((tf) => directional(structures?.[tf], direction)).length;
+    const execution = ['1h', '30m'].filter((tf) => directional(structures?.[tf], direction)).length;
+    const momentumVotes = ['1h', '30m'].filter((tf) => momentum?.timeframes?.[tf]?.direction === expected).length;
+    const break = latestDirectionalBreak(structures, direction);
+    const sweep = latestOpposingSweep(liquidity, direction);
+    const contextBias = context?.bias === expected;
+    const recentBreak = break ? number(break.event.index) : -1;
+    const recentSweep = sweep ? number(sweep.candleIndex) : -1;
+    const reversal = Boolean(break && sweep && recentBreak >= recentSweep && break.event.kind === 'CHoCH');
+    const continuation = Boolean(break && (!sweep || recentBreak >= recentSweep));
+    const pullback = macro >= 2 && execution >= 1;
+
+    let type = null;
+    if (reversal) type = 'REVERSAL';
+    else if (continuation) type = 'CONTINUATION';
+    else if (pullback) type = 'PULLBACK';
+
+    if (!type) return null;
+
+    let structuralScore = macro * 18 + execution * 14 + (break ? 18 : 0) + (contextBias ? 12 : 0);
+    if (reversal) structuralScore += 6;
+    if (sweep) structuralScore += 6;
+    if (context?.regime === 'trending' && continuation) structuralScore += 5;
+    if (context?.regime === 'transitioning' && reversal) structuralScore += 5;
+
+    return {
+      direction,
+      type,
+      score: Math.min(100, structuralScore),
+      macro,
+      execution,
+      momentumVotes,
+      break,
+      sweep,
+      contextBias,
+      reasons: [
+        `${type.toLowerCase()} structure identified`,
+        `${macro}/3 macro timeframes support ${direction}`,
+        `${execution}/2 execution timeframes support ${direction}`,
+      ],
+    };
+  }).filter(Boolean).sort((a, b) => b.score - a.score);
+}
+
+function selectDirection(args) {
+  const candidates = directionCandidates(args);
+  if (!candidates.length) return null;
+  const best = candidates[0];
+  const second = candidates[1];
+  // Mixed evidence lowers confidence through scoring; it does not become a hard gate.
+  if (second && second.score >= best.score - 3) return best.score >= 45 ? best : null;
+  return best.score >= 35 ? best : null;
+}
+
+function executionCandle(marketData) {
+  const candles = marketData?.timeframes?.['30m']?.candles;
+  return Array.isArray(candles) && candles.length ? candles[candles.length - 1] : null;
+}
+
+function entryForSetup({ marketData, structures, setup }) {
+  const price = number(marketData.ticker.lastPrice);
+  const candle = executionCandle(marketData);
+  const result = calculateEntry({
+    direction: setup.direction,
+    price,
+    structures,
+    setup: { executionCandle: candle },
+  });
+
+  if (result.valid) return result;
+
+  // A valid structural pullback can be executable without a fresh break on the
+  // 30m chart. Use the latest protected execution swing as the actual level.
+  if (setup.type === 'PULLBACK') {
+    const point = setup.direction === 'LONG'
+      ? structures?.['30m']?.protectedLow
+      : structures?.['30m']?.protectedHigh;
+    const level = number(point?.price);
+    const near = finite(level) && Math.abs(price - level) / Math.max(price, 1) <= 0.012;
+    const onCorrectSide = setup.direction === 'LONG' ? price > level : price < level;
+    if (near && onCorrectSide) {
+      return {
+        valid: true,
+        price,
+        mode: 'pullback',
+        reference: { timeframe: '30m', structuralLevel: level },
+        reason: 'Price is interacting with a protected execution structure level',
+      };
+    }
+  }
+
+  return result;
+}
+
+function buildThesis({ setup, entry, stop, targets, quality }) {
+  const target = targets[0];
+  return {
+    structural: setup.reasons[0] || 'Directional market structure supports the setup.',
+    liquidity: setup.sweep
+      ? `Opposing liquidity was swept before the ${setup.direction.toLowerCase()} structural response.`
+      : target
+        ? `${target.liquidityClass || 'Meaningful'} liquidity provides a structural objective.`
+        : 'No meaningful opposing liquidity objective is available.',
+    entry: entry.reason || 'Entry is derived from the active structural setup model.',
+    invalidation: stop.reason || `Setup invalidates beyond ${stop.stop}.`,
+    quality: `Quality ${quality.score}/100 (${quality.grade}); ${quality.confidence}.`,
+  };
+}
+
+function finalValidation({ direction, entry, stop, targets }) {
+  const validation = validatePriceLevels({ direction, entry, stop, targets });
+  if (!validation.valid) return validation;
+  if (!targets.length) return { valid: false, reason: 'No valid targets established' };
+  return { valid: true, reason: null };
+}
+
+async function analyzeSymbol(symbol) {
+  if (!symbol) throw new Error('symbol is required');
+
+  const marketData = await getMarketData(symbol);
+  const price = number(marketData?.ticker?.lastPrice);
+  if (!finite(price) || price <= 0) return wait(symbol, null, 'marketData', 'Invalid market price');
+
+  const context = analyzeContext(marketData);
+  const structures = analyzeAllStructures(marketData);
+  const liquidity = analyzeAllLiquidity(marketData, structures);
+  const momentum = analyzeMomentum(marketData.timeframes);
+  const analysis = { context, structures, liquidity, momentum };
+
+  const validTimeframes = TIMEFRAMES.filter((tf) => structures?.[tf]?.valid).length;
+  if (validTimeframes < 3) {
+    return wait(symbol, price, 'data', 'Insufficient closed-candle data for a reliable multi-timeframe decision', analysis);
+  }
+
+  const setup = selectDirection(analysis);
+  if (!setup) {
+    return wait(symbol, price, 'decision', 'No structurally coherent directional opportunity is available', analysis);
+  }
+
+  const entry = entryForSetup({ marketData, structures, setup });
+  if (!entry?.valid) {
+    return wait(symbol, price, 'entry', entry?.reason || 'Price has not reached a chart-derived executable entry', analysis);
+  }
+
+  const stop = calculateStop({ direction: setup.direction, entry: entry.price, structures });
+  if (!stop?.valid) {
+    return wait(symbol, price, 'invalidation', stop?.reason || 'No structural invalidation level is available', analysis);
+  }
+
+  const targetResult = buildTargets({
+    entry: entry.price,
+    stop: stop.stop,
+    direction: setup.direction,
+    liquidity,
+  });
+  if (!targetResult?.valid || !targetResult.targets?.length) {
+    return wait(symbol, price, 'targets', targetResult?.reason || 'No meaningful tradable liquidity target is available', analysis);
+  }
+
+  const quality = scoreSetup({
+    direction: setup.direction,
+    setupType: setup.type,
+    setup,
+    context,
+    structures,
+    liquidity,
+    momentum,
+    entry: entry.price,
+    stop: stop.stop,
+    riskReward: targetResult.riskReward,
+    targets: targetResult.targets,
+  });
+
+  if (quality.score < PUBLISH_THRESHOLD) {
+    return wait(symbol, price, 'quality', `Setup quality is ${quality.score}/100; publication threshold is ${PUBLISH_THRESHOLD}`, analysis);
+  }
+
+  const validation = finalValidation({
+    direction: setup.direction,
+    entry: entry.price,
+    stop: stop.stop,
+    targets: targetResult.targets,
+  });
+  if (!validation.valid) return wait(symbol, price, 'finalValidation', validation.reason, analysis);
+
+  return createSetupResult({
+    symbol: marketData.symbol,
+    price,
+    direction: setup.direction,
+    setupType: setup.type,
+    timeframe: setup.break?.timeframe || (entry.reference?.timeframe || '30m'),
+    marketRegime: context.regime,
+    entry: entry.price,
+    stop: stop.stop,
+    targets: targetResult.targets,
+    quality,
+    thesis: buildThesis({ setup, entry, stop, targets: targetResult.targets, quality }),
+    reasons: [...setup.reasons, ...quality.reasons, targetResult.reason],
+    context,
+    structures,
+    liquidity,
+    momentum,
+  });
+}
+
+function buildFinalSetup(args) {
+  const validation = finalValidation(args);
+  if (!validation.valid) return wait(args?.symbol, args?.price, 'finalValidation', validation.reason, args);
+  return createSetupResult(args);
+}
+
+module.exports = {
+  analyzeSymbol,
+  buildFinalSetup,
+  reject: wait,
+  LIVE_STATUSES: ['READY', 'ENTRY_HIT', 'ACTIVE', 'TP1_HIT', 'TP2_HIT', 'TP3_HIT'],
+  PUBLISH_THRESHOLD,
+};
