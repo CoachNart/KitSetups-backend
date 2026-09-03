@@ -8,7 +8,7 @@ function json(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-KitSetups-Device",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
 
@@ -36,6 +36,17 @@ function fallbackAnalysis(symbol, price = null, access = null) {
     access,
     subscribeRequired: !access?.hasAccess,
   };
+}
+
+async function getLivePrice(symbol) {
+  try {
+    const ticker = await fetchTicker(symbol);
+    const price = Number(ticker?.lastPrice);
+    return Number.isFinite(price) ? price : null;
+  } catch (error) {
+    console.warn("⚠️ Analysis ticker unavailable:", error.message || error);
+    return null;
+  }
 }
 
 async function analysisRoutes(req, res) {
@@ -70,15 +81,19 @@ async function analysisRoutes(req, res) {
       console.warn("⚠️ Analysis account lookup unavailable; using locked fallback:", error.message || error);
     }
 
+    // Authentication is still mandatory, but market data itself should not
+    // disappear just because the user does not have premium execution access.
+    // Keep entry/stop/targets locked while returning a useful live snapshot.
     if (!access.hasAccess) {
-      return json(res, 403, {
-        ok: false,
-        error: "Active subscription required",
-        code: "ACCESS_EXPIRED",
+      const price = await getLivePrice(symbol);
+
+      return json(res, 200, {
+        ok: true,
         data: {
-          analysis: null,
+          analysis: fallbackAnalysis(symbol, price, access),
           access,
           subscribeRequired: true,
+          degraded: true,
         },
       });
     }
@@ -97,13 +112,7 @@ async function analysisRoutes(req, res) {
     } catch (error) {
       console.error("⚠️ Full market analysis unavailable:", error.stack || error.message || error);
 
-      let price = null;
-      try {
-        const ticker = await fetchTicker(symbol);
-        price = Number(ticker?.lastPrice);
-      } catch (tickerError) {
-        console.warn("⚠️ Analysis fallback ticker unavailable:", tickerError.message || tickerError);
-      }
+      const price = await getLivePrice(symbol);
 
       return json(res, 200, {
         ok: true,
