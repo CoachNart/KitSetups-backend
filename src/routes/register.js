@@ -86,17 +86,29 @@ async function registerRoutes(req, res) {
       const userAgent = String(req.headers["user-agent"] || "").slice(0, 300);
 
       await db.runTransaction(async (tx) => {
-        const [userSnap, deviceSnap, fingerprintSnap, legacySnap] = await Promise.all([
+        const [userSnap, deviceSnap, fingerprintSnap, legacySnap, existingIpSnap] = await Promise.all([
           tx.get(user),
           tx.get(device),
           fingerprintRecord ? tx.get(fingerprintRecord) : Promise.resolve(null),
           legacyRecord ? tx.get(legacyRecord) : Promise.resolve(null),
+          // Older accounts created before the device registry was reliable still
+          // have their registration IP + user-agent stored on the account. Use
+          // that pair as a migration-safe device gate so those accounts cannot
+          // be bypassed simply by creating a new device ID.
+          db.collection("users").where("security.registrationIpHash", "==", clientIpHash).get(),
         ]);
 
         if (userSnap.exists) throw new Error("ACCOUNT_EXISTS");
         if (deviceSnap.exists) throw new Error("DEVICE_ALREADY_REGISTERED");
         if (fingerprintSnap?.exists && fingerprintSnap.data()?.uid) throw new Error("DEVICE_ALREADY_REGISTERED");
         if (legacySnap?.exists && legacySnap.data()?.uid) throw new Error("DEVICE_ALREADY_REGISTERED");
+
+        const sameRegistrationSource = existingIpSnap.docs.some((doc) => {
+          if (doc.id === uid) return false;
+          const data = doc.data() || {};
+          return String(data.security?.userAgent || "") === userAgent;
+        });
+        if (sameRegistrationSource) throw new Error("DEVICE_ALREADY_REGISTERED");
 
         const now = new Date();
         const createdAt = now.toISOString();
@@ -128,8 +140,6 @@ async function registerRoutes(req, res) {
         if (fingerprintRecord) tx.set(fingerprintRecord, { uid, createdAt, updatedAt: createdAt });
       });
 
-      // Keep a copy of the trial window in Firebase Auth so account access can
-      // still be reconstructed when Firestore is temporarily unavailable.
       try {
         const auth = getAuth(app);
         const authUser = await auth.getUser(uid);
