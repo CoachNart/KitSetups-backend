@@ -32,7 +32,14 @@ function hashDeviceId(deviceId) {
 }
 
 function hashFingerprint(fingerprint) {
-  return digest(normalizeFingerprint(fingerprint));
+  // The web client already sends a SHA-256 fingerprint. Treat a 64-character
+  // hex value as the canonical hash instead of hashing it again through an
+  // object-shaped legacy representation.
+  if (typeof fingerprint === "string" && /^[a-f0-9]{64}$/i.test(fingerprint)) {
+    return fingerprint.toLowerCase();
+  }
+  const normalized = normalizeFingerprint(fingerprint);
+  return normalized ? digest(normalized) : "";
 }
 
 function deviceRef(deviceId) {
@@ -42,6 +49,12 @@ function deviceRef(deviceId) {
 function fingerprintRef(fingerprint) {
   const hash = hashFingerprint(fingerprint);
   return hash ? db.collection(DEVICE_FINGERPRINTS).doc(hash) : null;
+}
+
+function legacyFingerprintRef(fingerprint) {
+  if (typeof fingerprint !== "string" || !fingerprint) return null;
+  const normalized = normalizeFingerprint({ platform: fingerprint });
+  return db.collection(DEVICE_FINGERPRINTS).doc(digest(normalized));
 }
 
 function getClientIp(req) {
@@ -61,6 +74,7 @@ module.exports = {
   hashFingerprint,
   deviceRef,
   fingerprintRef,
+  legacyFingerprintRef,
   getClientIp,
   hashIp,
 };
