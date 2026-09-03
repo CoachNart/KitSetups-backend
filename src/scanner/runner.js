@@ -2,14 +2,7 @@
 
 const { getUniverse, DEFAULT_UNIVERSE } = require("./universe");
 const { scanSymbol } = require("./scanner");
-const { initializeLifecycle, updateLifecycle } = require("../lifecycle/service");
-const {
-  publishScannerSnapshot,
-  publishScannerReadModel,
-  refreshScannerSnapshot,
-  updatePublishedLifecycle,
-  getPublishedSetupForSymbol,
-} = require("./persistence");
+const { publishScannerSnapshot, publishScannerReadModel, getScannerSnapshot } = require("./persistence");
 
 const SCAN_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_SCAN_SYMBOLS = 40;
@@ -35,46 +28,23 @@ const scannerRuntime = {
 async function processSnapshot(snapshot) {
   if (!snapshot) throw new Error("snapshot is required");
 
-  if (snapshot.status !== "READY" || snapshot.valid !== true) {
-    const existing = await getPublishedSetupForSymbol(snapshot.symbol);
-
-    if (existing && Number.isFinite(Number(snapshot.price)) && Number(snapshot.price) > 0) {
-      const updated = await updateLifecycle(existing, snapshot.price);
-      await updatePublishedLifecycle(existing, updated.lifecycle);
-      return {
-        symbol: snapshot.symbol,
-        status: snapshot.status,
-        lifecycle: updated.lifecycle,
-        action: "LIFECYCLE_UPDATED",
-        snapshot,
-      };
-    }
-
-    return {
-      symbol: snapshot.symbol,
-      status: snapshot.status,
-      lifecycle: existing?.lifecycle || null,
-      action: "WAITING_FOR_SETUP",
-      snapshot,
-    };
-  }
-
-  const initialized = await initializeLifecycle(snapshot);
-  const updated = await updateLifecycle(snapshot, snapshot.price);
-  await updatePublishedLifecycle(snapshot, updated.lifecycle);
-
+  // Scanning must never depend on Firestore. Lifecycle persistence used to
+  // perform a full collection read for every symbol, turning one 40-symbol
+  // scan into dozens of Firestore reads and causing RESOURCE_EXHAUSTED.
+  // Lifecycle state is now attached only when a durable snapshot is available
+  // and otherwise remains null; the market scanner itself stays authoritative.
   return {
     symbol: snapshot.symbol,
     status: snapshot.status,
-    lifecycle: updated.lifecycle,
-    action: initialized.existing ? "UPDATED" : "INITIALIZED",
+    valid: snapshot.valid === true,
+    lifecycle: snapshot.lifecycle || null,
+    action: snapshot.status === "READY" ? "SCANNED" : "WAITING_FOR_SETUP",
     snapshot,
   };
 }
 
 async function runScan(symbols = null) {
   if (symbols === null) symbols = await getUniverse();
-
   if (!Array.isArray(symbols) || symbols.length === 0) {
     console.warn("⚠️ Scanner universe is empty; using default universe.");
     symbols = [...DEFAULT_UNIVERSE];
@@ -82,7 +52,6 @@ async function runScan(symbols = null) {
 
   const originalCount = symbols.length;
   symbols = [...new Set(symbols)].slice(0, MAX_SCAN_SYMBOLS);
-
   if (originalCount > symbols.length) {
     console.log(`🎯 Scanner universe capped at ${MAX_SCAN_SYMBOLS}/${originalCount} symbols to stay within market-data rate limits.`);
   }
@@ -97,7 +66,6 @@ async function runScan(symbols = null) {
 
   for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
     const batch = symbols.slice(i, i + BATCH_SIZE);
-
     const batchResults = await Promise.all(
       batch.map(async (symbol) => {
         try {
@@ -138,9 +106,8 @@ async function runScan(symbols = null) {
     console.log(`🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`);
   }
 
-  // Keep the latest completed scan in process memory. This is the immediate
-  // broadcast/read path and survives persistence hiccups without changing
-  // authentication or execution rules.
+  // Always publish the completed in-memory result first. Firestore is a
+  // persistence layer, not a dependency of the scanner's data path.
   latestScanResults = results.map((result) => ({
     ...(result.snapshot || {}),
     symbol: result.symbol,
@@ -150,22 +117,16 @@ async function runScan(symbols = null) {
     reason: result.snapshot?.reason || result.reason || null,
   }));
 
-  const signals = results
-    .filter((result) => result.snapshot && result.snapshot.valid === true && result.snapshot.status === "READY")
-    .map((result) => ({ ...result.snapshot, lifecycle: result.lifecycle || null }));
+  const signals = latestScanResults.filter((result) => result.valid === true && result.status === "READY");
 
   try {
-    if (signals.length > 0) {
-      await publishScannerSnapshot(signals, {
-        scannedSymbols: results.length,
-        publishedSignals: signals.length,
-      });
-    } else {
-      await refreshScannerSnapshot({
-        scannedSymbols: results.length,
-        publishedSignals: 0,
-      });
-    }
+    // No per-symbol Firestore lifecycle reads/writes here. Persistence gets a
+    // single read-model write and may fail harmlessly when the project quota is
+    // exhausted; the in-memory broadcast remains available.
+    await publishScannerSnapshot(signals, {
+      scannedSymbols: results.length,
+      publishedSignals: signals.length,
+    });
 
     await publishScannerReadModel(latestScanResults, {
       scannedSymbols: results.length,
@@ -221,12 +182,10 @@ function startScannerLoop() {
     try {
       console.log("");
       console.log("🚀 KITSETUPS SCANNER CYCLE");
-
       const results = await runScan();
       const ready = results.filter((result) => result.status === "READY").length;
       const wait = results.filter((result) => result.status === "WAIT").length;
       const errors = results.filter((result) => result.status === "ERROR").length;
-
       console.log(`🏁 Cycle complete — ${results.length} scanned | ${ready} READY | ${wait} WAIT | ${errors} ERROR`);
     } catch (error) {
       scannerRuntime.status = "ERROR";
@@ -244,22 +203,9 @@ function startScannerLoop() {
   runCycle();
 }
 
-function stopScannerLoop() {
-  if (scannerLoopTimer) {
-    clearTimeout(scannerLoopTimer);
-    scannerLoopTimer = null;
-  }
-
-  scannerLoopRunning = false;
-  scannerRuntime.status = "STOPPED";
-  console.log("🛑 KitSetups scanner loop stopped.");
-}
-
 module.exports = {
-  processSnapshot,
   runScan,
+  startScannerLoop,
   getLatestScanResults,
   getScannerRuntimeStatus,
-  startScannerLoop,
-  stopScannerLoop,
 };
