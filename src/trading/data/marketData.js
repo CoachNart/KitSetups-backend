@@ -25,44 +25,31 @@ const LIMIT = 200;
 
 function requestJson(path) {
   return new Promise((resolve, reject) => {
-    const req = https.get(
-      `${BYBIT_BASE_URL}${path}`,
-      {
-        headers: {
-          "User-Agent": "KitSetups-TradingEngine/1.0",
-          Accept: "application/json",
-        },
+    const req = https.get(`${BYBIT_BASE_URL}${path}`, {
+      headers: {
+        "User-Agent": "KitSetups-TradingEngine/1.0",
+        Accept: "application/json",
       },
-      (res) => {
-        let body = "";
+    }, (res) => {
+      let body = "";
 
-        res.on("data", (chunk) => {
-          body += chunk;
-        });
+      res.on("data", (chunk) => { body += chunk; });
 
-        res.on("end", () => {
-          if (res.statusCode !== 200) {
-            reject(
-              new Error(
-                `Bybit HTTP ${res.statusCode}: ${body.slice(0, 300)}`,
-              ),
-            );
-            return;
-          }
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`Bybit HTTP ${res.statusCode}: ${body.slice(0, 300)}`));
+          return;
+        }
 
-          try {
-            resolve(JSON.parse(body));
-          } catch (error) {
-            reject(new Error(`Invalid Bybit JSON response: ${error.message}`));
-          }
-        });
-      },
-    );
-
-    req.setTimeout(15000, () => {
-      req.destroy(new Error("Bybit request timeout"));
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(new Error(`Invalid Bybit JSON response: ${error.message}`));
+        }
+      });
     });
 
+    req.setTimeout(15000, () => req.destroy(new Error("Bybit request timeout")));
     req.on("error", reject);
   });
 }
@@ -81,47 +68,32 @@ function toCandle(row) {
 }
 
 function validateCandle(candle) {
-  return (
-    Number.isFinite(candle.openTime) &&
+  return Number.isFinite(candle.openTime) &&
     Number.isFinite(candle.open) &&
     Number.isFinite(candle.high) &&
     Number.isFinite(candle.low) &&
     Number.isFinite(candle.close) &&
     candle.high >= candle.low &&
     candle.high >= Math.max(candle.open, candle.close) &&
-    candle.low <= Math.min(candle.open, candle.close)
-  );
+    candle.low <= Math.min(candle.open, candle.close);
 }
 
 async function fetchCandles(symbol, timeframe) {
   const interval = INTERVALS[timeframe];
-
-  if (!interval) {
-    throw new Error(`Unsupported timeframe: ${timeframe}`);
-  }
+  if (!interval) throw new Error(`Unsupported timeframe: ${timeframe}`);
 
   const response = await requestJson(
-    `/v5/market/kline?category=${CATEGORY}` +
-      `&symbol=${encodeURIComponent(symbol)}` +
-      `&interval=${interval}` +
-      `&limit=${LIMIT}`,
+    `/v5/market/kline?category=${CATEGORY}&symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${LIMIT}`,
   );
 
   if (response?.retCode !== 0) {
-    throw new Error(
-      `Bybit kline error for ${symbol} ${timeframe}: ` +
-        `${response?.retMsg || "unknown error"}`,
-    );
+    throw new Error(`Bybit kline error for ${symbol} ${timeframe}: ${response?.retMsg || "unknown error"}`);
   }
 
   const rows = response?.result?.list;
-
-  if (!Array.isArray(rows)) {
-    throw new Error(`Invalid candle payload for ${symbol} ${timeframe}`);
-  }
+  if (!Array.isArray(rows)) throw new Error(`Invalid candle payload for ${symbol} ${timeframe}`);
 
   const timeframeMs = TIMEFRAMES[timeframe];
-
   return rows
     .map(toCandle)
     .map((candle) => ({ ...candle, timeframeMs }))
@@ -133,22 +105,15 @@ async function fetchCandles(symbol, timeframe) {
 
 async function fetchTicker(symbol) {
   const response = await requestJson(
-    `/v5/market/tickers?category=${CATEGORY}` +
-      `&symbol=${encodeURIComponent(symbol)}`,
+    `/v5/market/tickers?category=${CATEGORY}&symbol=${encodeURIComponent(symbol)}`,
   );
 
   if (response?.retCode !== 0) {
-    throw new Error(
-      `Bybit ticker error for ${symbol}: ` +
-        `${response?.retMsg || "unknown error"}`,
-    );
+    throw new Error(`Bybit ticker error for ${symbol}: ${response?.retMsg || "unknown error"}`);
   }
 
   const ticker = response?.result?.list?.[0];
-
-  if (!ticker) {
-    throw new Error(`No ticker returned for ${symbol}`);
-  }
+  if (!ticker) throw new Error(`No ticker returned for ${symbol}`);
 
   return {
     symbol,
@@ -164,25 +129,37 @@ async function fetchTicker(symbol) {
 }
 
 async function getMarketData(symbol) {
-  if (!symbol) {
-    throw new Error("symbol is required");
+  if (!symbol) throw new Error("symbol is required");
+
+  const timeframes = {};
+  const warnings = [];
+
+  // Fetch ticker independently so a single candle/timeframe failure never
+  // prevents the frontend from receiving the current market price.
+  const [tickerResult, ...candleResults] = await Promise.all([
+    fetchTicker(symbol).catch((error) => ({ error })),
+    ...Object.keys(INTERVALS).map((timeframe) =>
+      fetchCandles(symbol, timeframe)
+        .then((candles) => ({ timeframe, candles }))
+        .catch((error) => ({ timeframe, error })),
+    ),
+  ]);
+
+  if (tickerResult?.error) throw tickerResult.error;
+
+  for (const result of candleResults) {
+    if (result.error) {
+      warnings.push(`${result.timeframe}: ${result.error.message || "candle fetch failed"}`);
+      continue;
+    }
+    timeframes[result.timeframe] = { candles: result.candles };
   }
-
-  // The five timeframe requests are independent. Running them concurrently
-  // prevents the scanner from taking minutes to process a single symbol.
-  const timeframeEntries = await Promise.all(
-    Object.keys(INTERVALS).map(async (timeframe) => [
-      timeframe,
-      { candles: await fetchCandles(symbol, timeframe) },
-    ]),
-  );
-
-  const ticker = await fetchTicker(symbol);
 
   return {
     symbol,
-    ticker,
-    timeframes: Object.fromEntries(timeframeEntries),
+    ticker: tickerResult,
+    timeframes,
+    warnings,
     generatedAt: new Date().toISOString(),
   };
 }
