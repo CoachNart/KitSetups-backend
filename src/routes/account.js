@@ -17,12 +17,29 @@ function responseFor(uid, data, extra = {}) {
   return { ok: true, data: { ...data, id: uid, trialActive: access.status === "TRIAL_ACTIVE", accessLocked: access.accessLocked, accessStatus: access.status, accessExpiresAt: access.expiresAt, access, ...extra } };
 }
 
+function claimFallback(uid, authUser) {
+  const claims = authUser?.customClaims || {};
+  const started = claims.kitsetupsTrialStartedAt || authUser?.metadata?.creationTime || null;
+  const ends = claims.kitsetupsTrialEndsAt || null;
+  return {
+    id: uid,
+    email: authUser?.email || "",
+    displayName: authUser?.displayName || "",
+    photoURL: authUser?.photoURL || null,
+    plan: "free",
+    planName: "Free",
+    trialStartedAt: started,
+    createdAt: authUser?.metadata?.creationTime || started,
+    trialEndsAt: ends,
+  };
+}
+
 async function authCreationFallback(uid, reqUser) {
   try {
     const authUser = await getAuth(app).getUser(uid);
     const created = authUser?.metadata?.creationTime;
     if (!created) return null;
-    return { id: uid, email: authUser.email || reqUser?.email || "", displayName: authUser.displayName || reqUser?.name || "", photoURL: authUser.photoURL || reqUser?.picture || null, plan: "free", planName: "Free", trialStartedAt: created, createdAt: created, trialEndsAt: new Date(new Date(created).getTime() + 3 * 24 * 60 * 60 * 1000).toISOString() };
+    return claimFallback(uid, authUser);
   } catch (error) {
     console.warn("⚠️ Firebase Auth account fallback unavailable:", error.message || error);
     return null;
@@ -46,8 +63,7 @@ async function accountRoutes(req, res) {
       if (cached) return json(res, 200, responseFor(uid, cached.account, { accountSource: "memory-cache", degraded: true }));
       const fallback = await authCreationFallback(uid, req.user);
       if (fallback) return json(res, 200, responseFor(uid, fallback, { accountSource: "firebase-auth-fallback", degraded: true }));
-      const access = getAccessState(null);
-      return json(res, 200, { ok: true, degraded: true, data: { id: uid, plan: "free", trialActive: false, accessLocked: true, accessStatus: "ACCOUNT_UNAVAILABLE", accessExpiresAt: null, access } });
+      return json(res, 503, { ok: false, error: "Account service temporarily unavailable", code: "ACCOUNT_SERVICE_UNAVAILABLE" });
     }
   });
 }
