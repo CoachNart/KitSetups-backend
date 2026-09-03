@@ -16,13 +16,22 @@ function normalizeSymbol(symbol) {
   return normalized || null;
 }
 
-
 async function getUniverse() {
-  const ranking = await buildMarketRanking();
+  try {
+    const ranking = await buildMarketRanking();
+    const ranked = (ranking.rankedMarkets || [])
+      .map((market) => normalizeSymbol(market.symbol))
+      .filter(Boolean);
 
-  return (ranking.rankedMarkets || [])
-    .map((market) => market.symbol)
-    .filter(Boolean);
+    if (ranked.length > 0) return ranked;
+  } catch (error) {
+    console.warn(
+      "⚠️ Market ranking unavailable; using default scanner universe:",
+      error.message || error,
+    );
+  }
+
+  return [...DEFAULT_UNIVERSE];
 }
 
 function isSupportedSymbol(symbol) {
@@ -40,7 +49,7 @@ function createUniverse(symbols) {
     ...new Set(
       symbols
         .map(normalizeSymbol)
-        .filter(Boolean)
+        .filter(Boolean),
     ),
   ];
 }
