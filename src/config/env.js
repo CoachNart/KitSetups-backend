@@ -1,11 +1,16 @@
 require("dotenv").config();
 
-const required = ["FIREBASE_SERVICE_ACCOUNT_BASE64"];
+const hasBase64 = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64);
+const hasLegacy = Boolean(
+  process.env.FIREBASE_PROJECT_ID &&
+  process.env.FIREBASE_CLIENT_EMAIL &&
+  process.env.FIREBASE_PRIVATE_KEY,
+);
 
-for (const key of required) {
-  if (!process.env[key]) {
-    throw new Error(`Missing environment variable: ${key}`);
-  }
+if (!hasBase64 && !hasLegacy) {
+  throw new Error(
+    "Missing Firebase configuration. Set FIREBASE_SERVICE_ACCOUNT_BASE64 or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.",
+  );
 }
 
 module.exports = {
