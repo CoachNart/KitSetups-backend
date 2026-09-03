@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --check src/scanner/persistence.js && node --check src/scanner/runner.js && node --check src/trading/data/marketData.js && node --check src/routes/signals.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js"
   },
