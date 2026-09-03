@@ -1,6 +1,6 @@
 "use strict";
 
-const { getUniverse } = require("./universe");
+const { getUniverse, DEFAULT_UNIVERSE } = require("./universe");
 const { scanSymbol } = require("./scanner");
 const {
   initializeLifecycle,
@@ -8,6 +8,7 @@ const {
 } = require("../lifecycle/service");
 const {
   publishScannerSnapshot,
+  refreshScannerSnapshot,
   updatePublishedLifecycle,
   getPublishedSetupForSymbol,
 } = require("./persistence");
@@ -17,30 +18,17 @@ async function processSnapshot(snapshot) {
     throw new Error("snapshot is required");
   }
 
-  if (
-    snapshot.status !== "READY" ||
-    snapshot.valid !== true
-  ) {
-    const existing =
-      await getPublishedSetupForSymbol(
-        snapshot.symbol
-      );
+  if (snapshot.status !== "READY" || snapshot.valid !== true) {
+    const existing = await getPublishedSetupForSymbol(snapshot.symbol);
 
     if (
       existing &&
       Number.isFinite(Number(snapshot.price)) &&
       Number(snapshot.price) > 0
     ) {
-      const updated =
-        await updateLifecycle(
-          existing,
-          snapshot.price
-        );
+      const updated = await updateLifecycle(existing, snapshot.price);
 
-      await updatePublishedLifecycle(
-        existing,
-        updated.lifecycle
-      );
+      await updatePublishedLifecycle(existing, updated.lifecycle);
 
       return {
         symbol: snapshot.symbol,
@@ -60,39 +48,28 @@ async function processSnapshot(snapshot) {
     };
   }
 
-  const initialized =
-    await initializeLifecycle(snapshot);
+  const initialized = await initializeLifecycle(snapshot);
+  const updated = await updateLifecycle(snapshot, snapshot.price);
 
-  const updated =
-    await updateLifecycle(
-      snapshot,
-      snapshot.price
-    );
-
-  await updatePublishedLifecycle(
-    snapshot,
-    updated.lifecycle
-  );
+  await updatePublishedLifecycle(snapshot, updated.lifecycle);
 
   return {
     symbol: snapshot.symbol,
     status: snapshot.status,
     lifecycle: updated.lifecycle,
-    action: initialized.existing
-      ? "UPDATED"
-      : "INITIALIZED",
+    action: initialized.existing ? "UPDATED" : "INITIALIZED",
     snapshot,
   };
 }
 
-async function runScan(
-  symbols = null
-) {
+async function runScan(symbols = null) {
   if (symbols === null) {
     symbols = await getUniverse();
   }
-  if (!Array.isArray(symbols)) {
-    throw new Error("symbols must be an array");
+
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    console.warn("⚠️ Scanner universe is empty; using default universe.");
+    symbols = [...DEFAULT_UNIVERSE];
   }
 
   const results = [];
@@ -104,11 +81,8 @@ async function runScan(
     const batchResults = await Promise.all(
       batch.map(async (symbol) => {
         try {
-          const snapshot =
-            await scanSymbol(symbol);
-
-          const result =
-            await processSnapshot(snapshot);
+          const snapshot = await scanSymbol(symbol);
+          const result = await processSnapshot(snapshot);
 
           return {
             ...result,
@@ -120,18 +94,16 @@ async function runScan(
             status: "ERROR",
             lifecycle: null,
             action: "ERROR",
-            reason:
-              error.message ||
-              "Scan failed",
+            reason: error.message || "Scan failed",
           };
         }
-      })
+      }),
     );
 
     results.push(...batchResults);
 
     console.log(
-      `🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`
+      `🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`,
     );
   }
 
@@ -140,24 +112,24 @@ async function runScan(
       (result) =>
         result.snapshot &&
         result.snapshot.valid === true &&
-        result.snapshot.status === "READY"
+        result.snapshot.status === "READY",
     )
     .map((result) => ({
       ...result.snapshot,
-      lifecycle:
-        result.lifecycle || null,
+      lifecycle: result.lifecycle || null,
     }));
 
-  /*
-   * Never erase published signals because the current scan
-   * produced WAIT/ERROR results.
-   *
-   * An empty READY set is not a destructive event.
-   */
+  // Publish new READY setups when available. Then always refresh the aggregate
+  // snapshot so the API has a canonical document even on a WAIT-only cycle.
   if (signals.length > 0) {
     await publishScannerSnapshot(signals, {
       scannedSymbols: results.length,
       publishedSignals: signals.length,
+    });
+  } else {
+    await refreshScannerSnapshot({
+      scannedSymbols: results.length,
+      publishedSignals: 0,
     });
   }
 
@@ -178,8 +150,7 @@ function startScannerLoop() {
   scannerLoopRunning = true;
 
   console.log(
-    `🔄 KitSetups scanner loop started — ` +
-    `next cycle ${SCAN_INTERVAL_MS / 60000} minutes after completion`
+    `🔄 KitSetups scanner loop started — next cycle ${SCAN_INTERVAL_MS / 60000} minutes after completion`,
   );
 
   const runCycle = async () => {
@@ -189,43 +160,24 @@ function startScannerLoop() {
 
       const results = await runScan();
 
-      const ready = results.filter(
-        (result) =>
-          result.status === "READY"
-      ).length;
-
-      const wait = results.filter(
-        (result) =>
-          result.status === "WAIT"
-      ).length;
-
-      const errors = results.filter(
-        (result) =>
-          result.status === "ERROR"
-      ).length;
+      const ready = results.filter((result) => result.status === "READY").length;
+      const wait = results.filter((result) => result.status === "WAIT").length;
+      const errors = results.filter((result) => result.status === "ERROR").length;
 
       console.log(
-        `🏁 Cycle complete — ` +
-        `${results.length} scanned | ` +
-        `${ready} READY | ` +
-        `${wait} WAIT | ` +
-        `${errors} ERROR`
+        `🏁 Cycle complete — ${results.length} scanned | ${ready} READY | ${wait} WAIT | ${errors} ERROR`,
       );
     } catch (error) {
       console.error(
         "❌ Scanner cycle failed:",
-        error.stack || error.message || error
+        error.stack || error.message || error,
       );
     } finally {
       console.log(
-        `⏱️ Next scanner cycle in ` +
-        `${SCAN_INTERVAL_MS / 60000} minutes`
+        `⏱️ Next scanner cycle in ${SCAN_INTERVAL_MS / 60000} minutes`,
       );
 
-      scannerLoopTimer = setTimeout(
-        runCycle,
-        SCAN_INTERVAL_MS
-      );
+      scannerLoopTimer = setTimeout(runCycle, SCAN_INTERVAL_MS);
     }
   };
 
@@ -239,7 +191,6 @@ function stopScannerLoop() {
   }
 
   scannerLoopRunning = false;
-
   console.log("🛑 KitSetups scanner loop stopped.");
 }
 
