@@ -168,20 +168,21 @@ async function getMarketData(symbol) {
     throw new Error("symbol is required");
   }
 
-  const timeframes = {};
-
-  for (const timeframe of Object.keys(INTERVALS)) {
-    timeframes[timeframe] = {
-      candles: await fetchCandles(symbol, timeframe),
-    };
-  }
+  // The five timeframe requests are independent. Running them concurrently
+  // prevents the scanner from taking minutes to process a single symbol.
+  const timeframeEntries = await Promise.all(
+    Object.keys(INTERVALS).map(async (timeframe) => [
+      timeframe,
+      { candles: await fetchCandles(symbol, timeframe) },
+    ]),
+  );
 
   const ticker = await fetchTicker(symbol);
 
   return {
     symbol,
     ticker,
-    timeframes,
+    timeframes: Object.fromEntries(timeframeEntries),
     generatedAt: new Date().toISOString(),
   };
 }
