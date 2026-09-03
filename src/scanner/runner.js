@@ -13,6 +13,25 @@ const {
   getPublishedSetupForSymbol,
 } = require("./persistence");
 
+const SCAN_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_SCAN_SYMBOLS = 40;
+
+let scannerLoopRunning = false;
+let scannerLoopTimer = null;
+
+const scannerRuntime = {
+  status: "STARTING",
+  startedAt: null,
+  lastStartedAt: null,
+  lastCompletedAt: null,
+  lastError: null,
+  scannedSymbols: 0,
+  ready: 0,
+  wait: 0,
+  errors: 0,
+  nextCycleAt: null,
+};
+
 async function processSnapshot(snapshot) {
   if (!snapshot) {
     throw new Error("snapshot is required");
@@ -72,8 +91,21 @@ async function runScan(symbols = null) {
     symbols = [...DEFAULT_UNIVERSE];
   }
 
+  const originalCount = symbols.length;
+  symbols = [...new Set(symbols)].slice(0, MAX_SCAN_SYMBOLS);
+
+  if (originalCount > symbols.length) {
+    console.log(
+      `🎯 Scanner universe capped at ${MAX_SCAN_SYMBOLS}/${originalCount} symbols to stay within market-data rate limits.`,
+    );
+  }
+
+  scannerRuntime.lastStartedAt = new Date().toISOString();
+  scannerRuntime.status = "SCANNING";
+  scannerRuntime.lastError = null;
+
   const results = [];
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 5;
 
   for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
     const batch = symbols.slice(i, i + BATCH_SIZE);
@@ -119,8 +151,6 @@ async function runScan(symbols = null) {
       lifecycle: result.lifecycle || null,
     }));
 
-  // Publish new READY setups when available. Then always refresh the aggregate
-  // snapshot so the API has a canonical document even on a WAIT-only cycle.
   if (signals.length > 0) {
     await publishScannerSnapshot(signals, {
       scannedSymbols: results.length,
@@ -133,13 +163,28 @@ async function runScan(symbols = null) {
     });
   }
 
+  const ready = results.filter((result) => result.status === "READY").length;
+  const wait = results.filter((result) => result.status === "WAIT").length;
+  const errors = results.filter((result) => result.status === "ERROR").length;
+
+  scannerRuntime.status = "READY";
+  scannerRuntime.lastCompletedAt = new Date().toISOString();
+  scannerRuntime.scannedSymbols = results.length;
+  scannerRuntime.ready = ready;
+  scannerRuntime.wait = wait;
+  scannerRuntime.errors = errors;
+
   return results;
 }
 
-const SCAN_INTERVAL_MS = 5 * 60 * 1000;
-
-let scannerLoopRunning = false;
-let scannerLoopTimer = null;
+function getScannerRuntimeStatus() {
+  return {
+    ...scannerRuntime,
+    running: scannerLoopRunning,
+    intervalMinutes: SCAN_INTERVAL_MS / 60000,
+    maxScanSymbols: MAX_SCAN_SYMBOLS,
+  };
+}
 
 function startScannerLoop() {
   if (scannerLoopRunning) {
@@ -148,9 +193,11 @@ function startScannerLoop() {
   }
 
   scannerLoopRunning = true;
+  scannerRuntime.status = "STARTING";
+  scannerRuntime.startedAt = new Date().toISOString();
 
   console.log(
-    `🔄 KitSetups scanner loop started — next cycle ${SCAN_INTERVAL_MS / 60000} minutes after completion`,
+    `🔄 KitSetups scanner loop started — scanning up to ${MAX_SCAN_SYMBOLS} markets; next cycle ${SCAN_INTERVAL_MS / 60000} minutes after completion`,
   );
 
   const runCycle = async () => {
@@ -168,11 +215,18 @@ function startScannerLoop() {
         `🏁 Cycle complete — ${results.length} scanned | ${ready} READY | ${wait} WAIT | ${errors} ERROR`,
       );
     } catch (error) {
+      scannerRuntime.status = "ERROR";
+      scannerRuntime.lastError = error.message || String(error);
+      scannerRuntime.lastCompletedAt = new Date().toISOString();
+
       console.error(
         "❌ Scanner cycle failed:",
         error.stack || error.message || error,
       );
     } finally {
+      const nextCycleAt = new Date(Date.now() + SCAN_INTERVAL_MS);
+      scannerRuntime.nextCycleAt = nextCycleAt.toISOString();
+
       console.log(
         `⏱️ Next scanner cycle in ${SCAN_INTERVAL_MS / 60000} minutes`,
       );
@@ -191,12 +245,14 @@ function stopScannerLoop() {
   }
 
   scannerLoopRunning = false;
+  scannerRuntime.status = "STOPPED";
   console.log("🛑 KitSetups scanner loop stopped.");
 }
 
 module.exports = {
   processSnapshot,
   runScan,
+  getScannerRuntimeStatus,
   startScannerLoop,
   stopScannerLoop,
 };
