@@ -1,7 +1,7 @@
 const { db, userRef } = require("../services/firestore");
 const { deviceRef } = require("../services/device");
 const { requireAuth } = require("../middleware/auth");
-const { addDays, TRIAL_DAYS } = require("../services/access");
+const { addDays, TRIAL_DAYS, getAccessState } = require("../services/access");
 
 function json(res, status, data) {
   res.writeHead(status, {
@@ -45,9 +45,9 @@ async function registerRoutes(req, res) {
     const device = deviceRef(deviceId);
 
     try {
+      let account;
+
       await db.runTransaction(async (tx) => {
-        // Both reads happen inside the transaction so two concurrent
-        // registration attempts cannot race past the device gate.
         const [userSnap, deviceSnap] = await Promise.all([
           tx.get(user),
           tx.get(device),
@@ -65,7 +65,7 @@ async function registerRoutes(req, res) {
         const createdAt = now.toISOString();
         const trialEndsAt = addDays(now, TRIAL_DAYS).toISOString();
 
-        const account = {
+        account = {
           id: uid,
           email: req.user.email || "",
           displayName: req.user.name || "",
@@ -88,17 +88,24 @@ async function registerRoutes(req, res) {
         });
       });
 
+      const access = getAccessState(account);
+
       return json(res, 201, {
         ok: true,
         data: {
           id: uid,
-          email: req.user.email || "",
-          displayName: req.user.name || "",
-          photoURL: req.user.picture || null,
-          plan: "free",
-          planName: "Free",
-          trialActive: true,
-          accessLocked: false,
+          email: account.email,
+          displayName: account.displayName,
+          photoURL: account.photoURL,
+          plan: account.plan,
+          planName: account.planName,
+          trialActive: access.status === "TRIAL_ACTIVE",
+          trialStartedAt: account.trialStartedAt.toISOString(),
+          trialEndsAt: account.trialEndsAt,
+          accessLocked: access.accessLocked,
+          accessStatus: access.status,
+          accessExpiresAt: access.expiresAt,
+          access,
         },
       });
     } catch (error) {
