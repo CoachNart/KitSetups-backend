@@ -2,7 +2,7 @@ const { userRef } = require("../services/firestore");
 const { getAuth } = require("firebase-admin/auth");
 const { app } = require("../config/firebase");
 const { requireAuth } = require("../middleware/auth");
-const { getAccessState } = require("../services/access");
+const { addDays, TRIAL_DAYS, getAccessState } = require("../services/access");
 
 const ACCOUNT_CACHE_TTL_MS = 60 * 1000;
 const accountCache = new Map();
@@ -21,7 +21,7 @@ function claimFallback(uid, authUser) {
   const claims = authUser?.customClaims || {};
   const created = authUser?.metadata?.creationTime || null;
   const trialStartedAt = claims.kitsetupsTrialStartedAt || created;
-  const trialEndsAt = claims.kitsetupsTrialEndsAt || (trialStartedAt ? new Date(new Date(trialStartedAt).getTime() + 3 * 24 * 60 * 60 * 1000).toISOString() : null);
+  const trialEndsAt = claims.kitsetupsTrialEndsAt || (trialStartedAt ? addDays(trialStartedAt, TRIAL_DAYS)?.toISOString() : null);
   const premiumEndsAt = claims.kitsetupsSubscriptionEndsAt || null;
   return {
     id: uid,
@@ -35,6 +35,42 @@ function claimFallback(uid, authUser) {
     trialEndsAt,
     subscriptionEndsAt: premiumEndsAt,
   };
+}
+
+async function syncMissingTrialWindow(uid, data) {
+  if (data?.plan === "premium" || data?.trialStartedAt || data?.trialEndsAt) return data;
+
+  try {
+    const authUser = await getAuth(app).getUser(uid);
+    const startedAt = data?.createdAt || authUser?.metadata?.creationTime || new Date().toISOString();
+    const trialEndsAt = addDays(startedAt, TRIAL_DAYS)?.toISOString();
+    if (!trialEndsAt) return data;
+
+    const patch = {
+      trialActive: new Date(trialEndsAt) > new Date(),
+      trialStartedAt: startedAt,
+      trialEndsAt,
+      accessLocked: new Date(trialEndsAt) <= new Date(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await userRef(uid).set(patch, { merge: true });
+
+    try {
+      await getAuth(app).setCustomUserClaims(uid, {
+        ...(authUser.customClaims || {}),
+        kitsetupsTrialStartedAt: startedAt,
+        kitsetupsTrialEndsAt: trialEndsAt,
+      });
+    } catch (claimError) {
+      console.warn("⚠️ Trial claim backfill unavailable:", claimError.message || claimError);
+    }
+
+    return { ...data, ...patch };
+  } catch (error) {
+    console.warn("⚠️ Trial window backfill unavailable:", error.message || error);
+    return data;
+  }
 }
 
 async function authCreationFallback(uid) {
@@ -57,7 +93,9 @@ async function accountRoutes(req, res) {
     try {
       const snap = await userRef(uid).get();
       if (!snap.exists) return json(res, 404, { ok: false, error: "Account not found", code: "ACCOUNT_NOT_FOUND" });
-      const data = snap.data();
+
+      let data = snap.data();
+      data = await syncMissingTrialWindow(uid, data);
       accountCache.set(uid, { account: data, cachedAt: Date.now() });
       return json(res, 200, responseFor(uid, data));
     } catch (error) {
