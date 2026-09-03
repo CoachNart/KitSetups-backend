@@ -8,6 +8,7 @@ const {
 } = require("../lifecycle/service");
 const {
   publishScannerSnapshot,
+  publishScannerReadModel,
   refreshScannerSnapshot,
   updatePublishedLifecycle,
   getPublishedSetupForSymbol,
@@ -33,22 +34,14 @@ const scannerRuntime = {
 };
 
 async function processSnapshot(snapshot) {
-  if (!snapshot) {
-    throw new Error("snapshot is required");
-  }
+  if (!snapshot) throw new Error("snapshot is required");
 
   if (snapshot.status !== "READY" || snapshot.valid !== true) {
     const existing = await getPublishedSetupForSymbol(snapshot.symbol);
 
-    if (
-      existing &&
-      Number.isFinite(Number(snapshot.price)) &&
-      Number(snapshot.price) > 0
-    ) {
+    if (existing && Number.isFinite(Number(snapshot.price)) && Number(snapshot.price) > 0) {
       const updated = await updateLifecycle(existing, snapshot.price);
-
       await updatePublishedLifecycle(existing, updated.lifecycle);
-
       return {
         symbol: snapshot.symbol,
         status: snapshot.status,
@@ -62,14 +55,13 @@ async function processSnapshot(snapshot) {
       symbol: snapshot.symbol,
       status: snapshot.status,
       lifecycle: existing?.lifecycle || null,
-      action: "IGNORED",
+      action: "WAITING_FOR_SETUP",
       snapshot,
     };
   }
 
   const initialized = await initializeLifecycle(snapshot);
   const updated = await updateLifecycle(snapshot, snapshot.price);
-
   await updatePublishedLifecycle(snapshot, updated.lifecycle);
 
   return {
@@ -82,9 +74,7 @@ async function processSnapshot(snapshot) {
 }
 
 async function runScan(symbols = null) {
-  if (symbols === null) {
-    symbols = await getUniverse();
-  }
+  if (symbols === null) symbols = await getUniverse();
 
   if (!Array.isArray(symbols) || symbols.length === 0) {
     console.warn("⚠️ Scanner universe is empty; using default universe.");
@@ -95,9 +85,7 @@ async function runScan(symbols = null) {
   symbols = [...new Set(symbols)].slice(0, MAX_SCAN_SYMBOLS);
 
   if (originalCount > symbols.length) {
-    console.log(
-      `🎯 Scanner universe capped at ${MAX_SCAN_SYMBOLS}/${originalCount} symbols to stay within market-data rate limits.`,
-    );
+    console.log(`🎯 Scanner universe capped at ${MAX_SCAN_SYMBOLS}/${originalCount} symbols to stay within market-data rate limits.`);
   }
 
   scannerRuntime.lastStartedAt = new Date().toISOString();
@@ -115,41 +103,44 @@ async function runScan(symbols = null) {
         try {
           const snapshot = await scanSymbol(symbol);
           const result = await processSnapshot(snapshot);
-
-          return {
-            ...result,
-            snapshot,
-          };
+          return { ...result, snapshot };
         } catch (error) {
           return {
             symbol,
             status: "ERROR",
+            valid: false,
             lifecycle: null,
             action: "ERROR",
             reason: error.message || "Scan failed",
+            snapshot: {
+              symbol,
+              price: null,
+              status: "ERROR",
+              valid: false,
+              direction: null,
+              entry: null,
+              stop: null,
+              targets: [],
+              riskReward: null,
+              quality: null,
+              stage: "scanner",
+              reason: error.message || "Scan failed",
+              lifecycle: null,
+              generatedAt: new Date().toISOString(),
+              snapshotAt: new Date().toISOString(),
+            },
           };
         }
       }),
     );
 
     results.push(...batchResults);
-
-    console.log(
-      `🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`,
-    );
+    console.log(`🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`);
   }
 
   const signals = results
-    .filter(
-      (result) =>
-        result.snapshot &&
-        result.snapshot.valid === true &&
-        result.snapshot.status === "READY",
-    )
-    .map((result) => ({
-      ...result.snapshot,
-      lifecycle: result.lifecycle || null,
-    }));
+    .filter((result) => result.snapshot && result.snapshot.valid === true && result.snapshot.status === "READY")
+    .map((result) => ({ ...result.snapshot, lifecycle: result.lifecycle || null }));
 
   if (signals.length > 0) {
     await publishScannerSnapshot(signals, {
@@ -162,6 +153,22 @@ async function runScan(symbols = null) {
       publishedSignals: 0,
     });
   }
+
+  // Always publish the complete scan read-model. A market being WAIT is
+  // legitimate engine output and must not become an empty frontend state.
+  const scanResults = results.map((result) => ({
+    ...(result.snapshot || {}),
+    symbol: result.symbol,
+    status: result.snapshot?.status || result.status,
+    valid: result.snapshot?.valid === true,
+    lifecycle: result.lifecycle || result.snapshot?.lifecycle || null,
+    reason: result.snapshot?.reason || result.reason || null,
+  }));
+
+  await publishScannerReadModel(scanResults, {
+    scannedSymbols: results.length,
+    cycle: Date.now(),
+  });
 
   const ready = results.filter((result) => result.status === "READY").length;
   const wait = results.filter((result) => result.status === "WAIT").length;
@@ -196,9 +203,7 @@ function startScannerLoop() {
   scannerRuntime.status = "STARTING";
   scannerRuntime.startedAt = new Date().toISOString();
 
-  console.log(
-    `🔄 KitSetups scanner loop started — scanning up to ${MAX_SCAN_SYMBOLS} markets; next cycle ${SCAN_INTERVAL_MS / 60000} minutes after completion`,
-  );
+  console.log(`🔄 KitSetups scanner loop started — scanning up to ${MAX_SCAN_SYMBOLS} markets; next cycle ${SCAN_INTERVAL_MS / 60000} minutes after completion`);
 
   const runCycle = async () => {
     try {
@@ -206,31 +211,20 @@ function startScannerLoop() {
       console.log("🚀 KITSETUPS SCANNER CYCLE");
 
       const results = await runScan();
-
       const ready = results.filter((result) => result.status === "READY").length;
       const wait = results.filter((result) => result.status === "WAIT").length;
       const errors = results.filter((result) => result.status === "ERROR").length;
 
-      console.log(
-        `🏁 Cycle complete — ${results.length} scanned | ${ready} READY | ${wait} WAIT | ${errors} ERROR`,
-      );
+      console.log(`🏁 Cycle complete — ${results.length} scanned | ${ready} READY | ${wait} WAIT | ${errors} ERROR`);
     } catch (error) {
       scannerRuntime.status = "ERROR";
       scannerRuntime.lastError = error.message || String(error);
       scannerRuntime.lastCompletedAt = new Date().toISOString();
-
-      console.error(
-        "❌ Scanner cycle failed:",
-        error.stack || error.message || error,
-      );
+      console.error("❌ Scanner cycle failed:", error.stack || error.message || error);
     } finally {
       const nextCycleAt = new Date(Date.now() + SCAN_INTERVAL_MS);
       scannerRuntime.nextCycleAt = nextCycleAt.toISOString();
-
-      console.log(
-        `⏱️ Next scanner cycle in ${SCAN_INTERVAL_MS / 60000} minutes`,
-      );
-
+      console.log(`⏱️ Next scanner cycle in ${SCAN_INTERVAL_MS / 60000} minutes`);
       scannerLoopTimer = setTimeout(runCycle, SCAN_INTERVAL_MS);
     }
   };
