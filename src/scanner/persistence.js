@@ -7,22 +7,11 @@ const COLLECTION = "signals";
 const DOCUMENT = "latest";
 
 function setupIdentity(signal) {
-  return [
-    signal.direction,
-    signal.entry,
-    signal.stop,
-    signal.targets?.[0]?.price,
-  ].join("|");
+  return [signal.direction, signal.entry, signal.stop, signal.targets?.[0]?.price].join("|");
 }
 
 function legacySetupIdentity(signal) {
-  return [
-    signal.symbol,
-    signal.direction,
-    signal.entry,
-    signal.stop,
-    signal.targets?.[0]?.price,
-  ].join("|");
+  return [signal.symbol, signal.direction, signal.entry, signal.stop, signal.targets?.[0]?.price].join("|");
 }
 
 function isLiveLifecycleSignal(signal) {
@@ -70,48 +59,54 @@ async function publishScannerSnapshot(signals, metadata = {}) {
   if (!Array.isArray(signals)) throw new Error("signals must be an array");
 
   const publishedAt = new Date().toISOString();
+  const existingSnapshot = await db.collection(COLLECTION).where("published", "==", true).get();
+  const existingDocs = existingSnapshot.docs;
+
+  // One published-signal query per scan, rather than one query per signal.
+  const byIdentity = new Map();
+  for (const doc of existingDocs) {
+    const data = doc.data() || {};
+    if (data.setupIdentity) byIdentity.set(data.setupIdentity, doc);
+    byIdentity.set(legacySetupIdentity(data), doc);
+  }
+
+  const batch = db.batch();
+  let writes = 0;
 
   for (const signal of signals) {
     if (!signal || signal.valid !== true || signal.status !== "READY" || !signal.symbol) continue;
 
     const identity = setupIdentity(signal);
     const legacyIdentity = legacySetupIdentity(signal);
-    const existing = await db.collection(COLLECTION).where("published", "==", true).get();
-    const existingDoc = existing.docs.find((doc) => {
-      const data = doc.data() || {};
-      return data.setupIdentity === identity || data.setupIdentity === legacyIdentity;
-    });
-
+    const existingDoc = byIdentity.get(identity) || byIdentity.get(legacyIdentity);
     const signalId = existingDoc ? existingDoc.id : `ks_${Date.now()}_${randomUUID().slice(0, 8)}`;
     const previous = existingDoc?.data() || {};
 
-    await db.collection(COLLECTION).doc(signalId).set(
-      {
-        ...signal,
-        signalId,
-        setupIdentity: identity,
-        published: true,
-        publishedAt: previous.publishedAt || publishedAt,
-        updatedAt: publishedAt,
-      },
-      { merge: true },
-    );
+    const payload = {
+      ...signal,
+      signalId,
+      setupIdentity: identity,
+      published: true,
+      publishedAt: previous.publishedAt || publishedAt,
+      updatedAt: publishedAt,
+    };
+
+    batch.set(db.collection(COLLECTION).doc(signalId), payload, { merge: true });
+    writes += 1;
   }
 
-  return writeScannerSnapshot(await getPublishedActiveSignals(), metadata);
+  if (writes > 0) await batch.commit();
+
+  const activeSignals = await getPublishedActiveSignals();
+  return writeScannerSnapshot(activeSignals, metadata);
 }
 
 async function publishScannerReadModel(scanResults, metadata = {}) {
   if (!Array.isArray(scanResults)) throw new Error("scanResults must be an array");
 
   const now = new Date().toISOString();
-  const safeResults = scanResults
-    .filter(Boolean)
-    .map((result) => ({ ...result }));
-
-  const readyCount = safeResults.filter(
-    (result) => result.status === "READY" && result.valid === true,
-  ).length;
+  const safeResults = scanResults.filter(Boolean).map((result) => ({ ...result }));
+  const readyCount = safeResults.filter((result) => result.status === "READY" && result.valid === true).length;
 
   const latestRef = db.collection(COLLECTION).doc(DOCUMENT);
   const current = await latestRef.get();
@@ -145,7 +140,6 @@ async function refreshScannerSnapshot(metadata = {}) {
 
 async function getPublishedSetupForSymbol(symbol) {
   if (!symbol) return null;
-
   const snapshot = await db.collection(COLLECTION).where("published", "==", true).get();
   return snapshot.docs
     .map((doc) => ({ ...doc.data(), signalId: doc.data().signalId || doc.id }))
@@ -161,18 +155,14 @@ async function updatePublishedLifecycle(signal, lifecycle) {
   const snapshot = await db.collection(COLLECTION).where("published", "==", true).get();
   const existing = snapshot.docs.find((doc) => {
     const data = doc.data() || {};
-    return (
-      data.setupIdentity === identity ||
-      data.setupIdentity === legacyIdentity ||
-      (data.symbol === signal.symbol && data.direction === signal.direction && Number(data.entry) === Number(signal.entry) && Number(data.stop) === Number(signal.stop))
-    );
+    return data.setupIdentity === identity || data.setupIdentity === legacyIdentity ||
+      (data.symbol === signal.symbol && data.direction === signal.direction && Number(data.entry) === Number(signal.entry) && Number(data.stop) === Number(signal.stop));
   });
 
   if (!existing) return null;
 
   const now = new Date().toISOString();
   await existing.ref.set({ lifecycle, signalState: lifecycle.status || null, updatedAt: now }, { merge: true });
-  await writeScannerSnapshot(await getPublishedActiveSignals(), { publishedSignals: (await getPublishedActiveSignals()).length }, { merge: true });
 
   return { ...existing.data(), lifecycle, signalState: lifecycle.status || null, updatedAt: now };
 }
