@@ -19,26 +19,28 @@ function responseFor(uid, data, extra = {}) {
 
 function claimFallback(uid, authUser) {
   const claims = authUser?.customClaims || {};
-  const started = claims.kitsetupsTrialStartedAt || authUser?.metadata?.creationTime || null;
-  const ends = claims.kitsetupsTrialEndsAt || null;
+  const created = authUser?.metadata?.creationTime || null;
+  const trialStartedAt = claims.kitsetupsTrialStartedAt || created;
+  const trialEndsAt = claims.kitsetupsTrialEndsAt || (trialStartedAt ? new Date(new Date(trialStartedAt).getTime() + 3 * 24 * 60 * 60 * 1000).toISOString() : null);
+  const premiumEndsAt = claims.kitsetupsSubscriptionEndsAt || null;
   return {
     id: uid,
     email: authUser?.email || "",
     displayName: authUser?.displayName || "",
     photoURL: authUser?.photoURL || null,
-    plan: "free",
-    planName: "Free",
-    trialStartedAt: started,
-    createdAt: authUser?.metadata?.creationTime || started,
-    trialEndsAt: ends,
+    plan: claims.kitsetupsPlan === "premium" ? "premium" : "free",
+    planName: claims.kitsetupsPlan === "premium" ? "Premium" : "Free",
+    trialStartedAt,
+    createdAt: created || trialStartedAt,
+    trialEndsAt,
+    subscriptionEndsAt: premiumEndsAt,
   };
 }
 
-async function authCreationFallback(uid, reqUser) {
+async function authCreationFallback(uid) {
   try {
     const authUser = await getAuth(app).getUser(uid);
-    const created = authUser?.metadata?.creationTime;
-    if (!created) return null;
+    if (!authUser) return null;
     return claimFallback(uid, authUser);
   } catch (error) {
     console.warn("⚠️ Firebase Auth account fallback unavailable:", error.message || error);
@@ -61,7 +63,7 @@ async function accountRoutes(req, res) {
     } catch (error) {
       console.error("ACCOUNT FIRESTORE ERROR:", error.stack || error.message || error);
       if (cached) return json(res, 200, responseFor(uid, cached.account, { accountSource: "memory-cache", degraded: true }));
-      const fallback = await authCreationFallback(uid, req.user);
+      const fallback = await authCreationFallback(uid);
       if (fallback) return json(res, 200, responseFor(uid, fallback, { accountSource: "firebase-auth-fallback", degraded: true }));
       return json(res, 503, { ok: false, error: "Account service temporarily unavailable", code: "ACCOUNT_SERVICE_UNAVAILABLE" });
     }
