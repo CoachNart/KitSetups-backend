@@ -10,8 +10,8 @@ const { analysisRoutes } = require("./routes/analysis");
 const { developerRoutes } = require("./routes/developer");
 const { paymentRoutes } = require("./routes/payment");
 const {
-  runScan,
   startScannerLoop,
+  getScannerRuntimeStatus,
 } = require("./scanner/runner");
 
 const PORT = Number(process.env.PORT || 8787);
@@ -22,7 +22,7 @@ function sendJson(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-KitSetups-Device",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
 
@@ -41,6 +41,7 @@ const server = http.createServer(async (req, res) => {
         service: "kitsetups-backend",
         status: "healthy",
         timestamp: new Date().toISOString(),
+        scanner: getScannerRuntimeStatus(),
       });
     }
 
