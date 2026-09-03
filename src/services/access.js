@@ -1,10 +1,32 @@
 const TRIAL_DAYS = 3;
 const PREMIUM_DAYS = 30;
 
+function toDate(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "object" && typeof value.toDate === "function") {
+    const date = value.toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
+  }
+
+  if (typeof value === "object" && Number.isFinite(value._seconds)) {
+    const date = new Date(value._seconds * 1000 + (Number(value._nanoseconds || 0) / 1e6));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function addDays(date, days) {
-  return new Date(
-    new Date(date).getTime() + days * 24 * 60 * 60 * 1000
-  );
+  const base = toDate(date);
+  if (!base) return null;
+
+  return new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
 function getAccessState(account) {
@@ -20,13 +42,10 @@ function getAccessState(account) {
     };
   }
 
-  if (
-    account.plan === "premium" &&
-    account.subscriptionEndsAt
-  ) {
-    const expiresAt = new Date(account.subscriptionEndsAt);
+  if (account.plan === "premium" && account.subscriptionEndsAt) {
+    const expiresAt = toDate(account.subscriptionEndsAt);
 
-    if (expiresAt > now) {
+    if (expiresAt && expiresAt > now) {
       return {
         hasAccess: true,
         accessLocked: false,
@@ -39,35 +58,33 @@ function getAccessState(account) {
     return {
       hasAccess: false,
       accessLocked: true,
-      status: "PREMIUM_EXPIRED",
+      status: expiresAt ? "PREMIUM_EXPIRED" : "PREMIUM_INVALID_EXPIRY",
       plan: "premium",
-      expiresAt: expiresAt.toISOString(),
+      expiresAt: expiresAt ? expiresAt.toISOString() : null,
     };
   }
 
   if (account.trialStartedAt) {
     const trialEndsAt =
-      account.trialEndsAt ||
+      toDate(account.trialEndsAt) ||
       addDays(account.trialStartedAt, TRIAL_DAYS);
 
-    const expiresAt = new Date(trialEndsAt);
-
-    if (expiresAt > now) {
+    if (trialEndsAt && trialEndsAt > now) {
       return {
         hasAccess: true,
         accessLocked: false,
         status: "TRIAL_ACTIVE",
         plan: "free",
-        expiresAt: expiresAt.toISOString(),
+        expiresAt: trialEndsAt.toISOString(),
       };
     }
 
     return {
       hasAccess: false,
       accessLocked: true,
-      status: "TRIAL_EXPIRED",
+      status: trialEndsAt ? "TRIAL_EXPIRED" : "TRIAL_INVALID_EXPIRY",
       plan: "free",
-      expiresAt: expiresAt.toISOString(),
+      expiresAt: trialEndsAt ? trialEndsAt.toISOString() : null,
     };
   }
 
