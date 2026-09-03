@@ -2,10 +2,18 @@ const { userRef, db } = require("../services/firestore");
 const { requireAuth } = require("../middleware/auth");
 const { getAccessState } = require("../services/access");
 const { fetchTicker } = require("../trading/data/marketData");
+const { buildMarketRanking } = require("../services/marketRanking");
 
 const SIGNALS_COLLECTION = "signals";
 const SIGNALS_DOCUMENT = "latest";
 const LIVE_STATUSES = new Set(["READY", "ENTRY_HIT", "ACTIVE", "TP1_HIT", "TP2_HIT", "TP3_HIT"]);
+const MARKET_FALLBACK_LIMIT = 20;
+const MARKET_FALLBACK_CACHE_MS = 60 * 1000;
+
+let marketFallbackCache = {
+  signals: [],
+  generatedAt: 0,
+};
 
 function json(res, status, data) {
   res.writeHead(status, {
@@ -15,6 +23,52 @@ function json(res, status, data) {
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
   res.end(JSON.stringify(data));
+}
+
+async function buildMarketFallback() {
+  const now = Date.now();
+
+  if (
+    marketFallbackCache.signals.length > 0 &&
+    now - marketFallbackCache.generatedAt < MARKET_FALLBACK_CACHE_MS
+  ) {
+    return marketFallbackCache.signals;
+  }
+
+  const ranking = await buildMarketRanking();
+  const signals = (ranking.rankedMarkets || [])
+    .slice(0, MARKET_FALLBACK_LIMIT)
+    .map((market) => ({
+      symbol: market.symbol,
+      price: Number(market.lastPrice),
+      status: "WAIT",
+      valid: false,
+      direction: null,
+      entry: null,
+      stop: null,
+      targets: [],
+      riskReward: null,
+      quality: {
+        score: Number(market.scores?.quality || 0),
+        grade: "WATCH",
+      },
+      stage: "market-ranking",
+      reason: "Market ranked by Bybit while the trading scanner completes its next cycle.",
+      lifecycle: null,
+      generatedAt: new Date().toISOString(),
+      source: "bybit",
+      marketRank: market.rank,
+      turnover24h: market.turnover24h,
+      openInterest: market.openInterest,
+      change24hPercent: Number(market.price24hPcnt || 0) * 100,
+    }));
+
+  marketFallbackCache = {
+    signals,
+    generatedAt: now,
+  };
+
+  return signals;
 }
 
 async function readScannerSnapshot() {
@@ -43,13 +97,47 @@ async function readScannerSnapshot() {
   };
 }
 
+async function ensureScannerData(scannerData) {
+  const source = Array.isArray(scannerData?.scanResults)
+    ? scannerData.scanResults
+    : Array.isArray(scannerData?.signals)
+      ? scannerData.signals
+      : [];
+
+  if (source.length > 0) return scannerData;
+
+  try {
+    const fallback = await buildMarketFallback();
+    const now = new Date().toISOString();
+
+    return {
+      ...scannerData,
+      signals: fallback,
+      scanResults: fallback,
+      scanner: {
+        ...(scannerData.scanner || {}),
+        status: "WAITING",
+        source: "bybit-market-fallback",
+        scannedSymbols: 0,
+        publishedSignals: 0,
+        readySignals: 0,
+        waitSignals: fallback.length,
+        errorSignals: 0,
+        updatedAt: now,
+      },
+      updatedAt: now,
+    };
+  } catch (error) {
+    console.warn("⚠️ Bybit market fallback failed:", error.message || error);
+    return scannerData;
+  }
+}
+
 async function refreshLivePrices(signals) {
   return Promise.all(
     signals.map(async (signal) => {
       const status = signal.lifecycle?.status || signal.signalState || signal.status;
 
-      // WAIT/ERROR rows already contain the scanner's latest market price.
-      // Only live/published setups need a second ticker lookup.
       if (!LIVE_STATUSES.has(status) || !signal.symbol) return signal;
 
       try {
@@ -105,7 +193,9 @@ async function signalsRoutes(req, res) {
       }
 
       const access = getAccessState(accountSnap.data());
-      const scannerData = await readScannerSnapshot();
+      let scannerData = await readScannerSnapshot();
+      scannerData = await ensureScannerData(scannerData);
+
       const sourceSignals = Array.isArray(scannerData.scanResults)
         ? scannerData.scanResults
         : Array.isArray(scannerData.signals)
