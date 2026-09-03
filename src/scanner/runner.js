@@ -5,7 +5,10 @@ const { scanSymbol } = require("./scanner");
 const { publishScannerSnapshot, publishScannerReadModel } = require("./persistence");
 
 const SCAN_INTERVAL_MS = 5 * 60 * 1000;
-const MAX_SCAN_SYMBOLS = 40;
+// Keep the Render instance comfortably below its memory ceiling. The scanner
+// used to retain 40 full technical snapshots, which can exhaust a small Node
+// instance even when symbols are processed sequentially.
+const MAX_SCAN_SYMBOLS = 12;
 
 let scannerLoopRunning = false;
 let scannerLoopTimer = null;
@@ -47,7 +50,7 @@ async function runScan(symbols = null) {
   const originalCount = symbols.length;
   symbols = [...new Set(symbols)].slice(0, MAX_SCAN_SYMBOLS);
   if (originalCount > symbols.length) {
-    console.log(`🎯 Scanner universe capped at ${MAX_SCAN_SYMBOLS}/${originalCount} symbols to stay within market-data rate limits.`);
+    console.log(`🎯 Scanner universe capped at ${MAX_SCAN_SYMBOLS}/${originalCount} symbols to protect backend memory.`);
   }
 
   scannerRuntime.lastStartedAt = new Date().toISOString();
@@ -57,52 +60,49 @@ async function runScan(symbols = null) {
 
   const results = [];
 
-  // Render's current instance is hitting Node's ~256 MB heap limit when five
-  // symbols are analyzed simultaneously. Each symbol loads five 200-candle
-  // datasets and builds multiple analysis structures. Analyze one symbol at a
-  // time so peak memory stays bounded while retaining the full 40-market scan.
-  const BATCH_SIZE = 1;
+  // Process strictly one market at a time. Do not accumulate concurrent
+  // analysis jobs on the Render instance.
+  for (let i = 0; i < symbols.length; i += 1) {
+    const symbol = symbols[i];
+    let result;
 
-  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-    const batch = symbols.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.all(
-      batch.map(async (symbol) => {
-        try {
-          const snapshot = await scanSymbol(symbol);
-          const result = await processSnapshot(snapshot);
-          return { ...result, snapshot };
-        } catch (error) {
-          return {
-            symbol,
-            status: "ERROR",
-            valid: false,
-            lifecycle: null,
-            action: "ERROR",
-            reason: error.message || "Scan failed",
-            snapshot: {
-              symbol,
-              price: null,
-              status: "ERROR",
-              valid: false,
-              direction: null,
-              entry: null,
-              stop: null,
-              targets: [],
-              riskReward: null,
-              quality: null,
-              stage: "scanner",
-              reason: error.message || "Scan failed",
-              lifecycle: null,
-              generatedAt: new Date().toISOString(),
-              snapshotAt: new Date().toISOString(),
-            },
-          };
-        }
-      }),
-    );
+    try {
+      const snapshot = await scanSymbol(symbol);
+      result = await processSnapshot(snapshot);
+    } catch (error) {
+      result = {
+        symbol,
+        status: "ERROR",
+        valid: false,
+        lifecycle: null,
+        action: "ERROR",
+        reason: error.message || "Scan failed",
+        snapshot: {
+          symbol,
+          price: null,
+          status: "ERROR",
+          valid: false,
+          direction: null,
+          entry: null,
+          stop: null,
+          targets: [],
+          riskReward: null,
+          quality: null,
+          stage: "scanner",
+          reason: error.message || "Scan failed",
+          lifecycle: null,
+          generatedAt: new Date().toISOString(),
+          snapshotAt: new Date().toISOString(),
+        },
+      };
+    }
 
-    results.push(...batchResults);
-    console.log(`🔎 Scanner progress: ${Math.min(i + BATCH_SIZE, symbols.length)}/${symbols.length}`);
+    results.push(result);
+    console.log(`🔎 Scanner progress: ${i + 1}/${symbols.length}`);
+
+    // Give the event loop a chance to release transient buffers between
+    // heavy technical-analysis jobs.
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
 
   latestScanResults = results.map((result) => ({
