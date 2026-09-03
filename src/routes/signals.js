@@ -11,10 +11,7 @@ const LIVE_STATUSES = new Set(["READY", "ENTRY_HIT", "ACTIVE", "TP1_HIT", "TP2_H
 const MARKET_FALLBACK_LIMIT = 20;
 const MARKET_FALLBACK_CACHE_MS = 60 * 1000;
 
-let marketFallbackCache = {
-  signals: [],
-  generatedAt: 0,
-};
+let marketFallbackCache = { signals: [], generatedAt: 0 };
 
 function json(res, status, data) {
   res.writeHead(status, {
@@ -28,41 +25,32 @@ function json(res, status, data) {
 
 async function buildMarketFallback() {
   const now = Date.now();
-
-  if (
-    marketFallbackCache.signals.length > 0 &&
-    now - marketFallbackCache.generatedAt < MARKET_FALLBACK_CACHE_MS
-  ) {
+  if (marketFallbackCache.signals.length > 0 && now - marketFallbackCache.generatedAt < MARKET_FALLBACK_CACHE_MS) {
     return marketFallbackCache.signals;
   }
 
   const ranking = await buildMarketRanking();
-  const signals = (ranking.rankedMarkets || [])
-    .slice(0, MARKET_FALLBACK_LIMIT)
-    .map((market) => ({
-      symbol: market.symbol,
-      price: Number(market.lastPrice),
-      status: "WAIT",
-      valid: false,
-      direction: null,
-      entry: null,
-      stop: null,
-      targets: [],
-      riskReward: null,
-      quality: {
-        score: Number(market.scores?.quality || 0),
-        grade: "WATCH",
-      },
-      stage: "market-ranking",
-      reason: "Market ranked by Bybit while the trading scanner completes its next cycle.",
-      lifecycle: null,
-      generatedAt: new Date().toISOString(),
-      source: "bybit",
-      marketRank: market.rank,
-      turnover24h: market.turnover24h,
-      openInterest: market.openInterest,
-      change24hPercent: Number(market.price24hPcnt || 0) * 100,
-    }));
+  const signals = (ranking.rankedMarkets || []).slice(0, MARKET_FALLBACK_LIMIT).map((market) => ({
+    symbol: market.symbol,
+    price: Number(market.lastPrice),
+    status: "WAIT",
+    valid: false,
+    direction: null,
+    entry: null,
+    stop: null,
+    targets: [],
+    riskReward: null,
+    quality: { score: Number(market.scores?.quality || 0), grade: "WATCH" },
+    stage: "market-ranking",
+    reason: "Market ranked by Bybit while the trading scanner completes its next cycle.",
+    lifecycle: null,
+    generatedAt: new Date().toISOString(),
+    source: "bybit",
+    marketRank: market.rank,
+    turnover24h: market.turnover24h,
+    openInterest: market.openInterest,
+    change24hPercent: Number(market.price24hPcnt || 0) * 100,
+  }));
 
   marketFallbackCache = { signals, generatedAt: now };
   return signals;
@@ -95,14 +83,9 @@ async function readScannerSnapshot() {
     };
   } catch (error) {
     const inMemory = getLatestScanResults();
-
-    if (inMemory.length > 0) {
-      const readySignals = inMemory.filter(
-        (signal) => signal.status === "READY" && signal.valid === true,
-      ).length;
-
+    if (Array.isArray(inMemory) && inMemory.length > 0) {
+      const readySignals = inMemory.filter((signal) => signal.status === "READY" && signal.valid === true).length;
       console.warn("⚠️ Firestore snapshot unavailable; serving latest in-memory scanner results.");
-
       return {
         signals: inMemory,
         scanResults: inMemory,
@@ -120,24 +103,17 @@ async function readScannerSnapshot() {
         recovered: true,
       };
     }
-
     throw error;
   }
 }
 
 async function ensureScannerData(scannerData) {
-  const source = Array.isArray(scannerData?.scanResults)
-    ? scannerData.scanResults
-    : Array.isArray(scannerData?.signals)
-      ? scannerData.signals
-      : [];
-
+  const source = Array.isArray(scannerData?.scanResults) ? scannerData.scanResults : Array.isArray(scannerData?.signals) ? scannerData.signals : [];
   if (source.length > 0) return scannerData;
 
   try {
     const fallback = await buildMarketFallback();
     const now = new Date().toISOString();
-
     return {
       ...scannerData,
       signals: fallback,
@@ -162,29 +138,22 @@ async function ensureScannerData(scannerData) {
 }
 
 async function refreshLivePrices(signals) {
-  return Promise.all(
-    signals.map(async (signal) => {
-      const status = signal.lifecycle?.status || signal.signalState || signal.status;
-      if (!LIVE_STATUSES.has(status) || !signal.symbol) return signal;
-
-      try {
-        const ticker = await fetchTicker(signal.symbol);
-        if (Number.isFinite(ticker?.lastPrice) && ticker.lastPrice > 0) {
-          return { ...signal, price: ticker.lastPrice };
-        }
-      } catch (error) {
-        console.warn(`⚠️ Live price refresh failed for ${signal.symbol}:`, error.message || error);
-      }
-
-      return signal;
-    }),
-  );
+  return Promise.all((signals || []).map(async (signal) => {
+    const status = signal.lifecycle?.status || signal.signalState || signal.status;
+    if (!LIVE_STATUSES.has(status) || !signal.symbol) return signal;
+    try {
+      const ticker = await fetchTicker(signal.symbol);
+      if (Number.isFinite(ticker?.lastPrice) && ticker.lastPrice > 0) return { ...signal, price: ticker.lastPrice };
+    } catch (error) {
+      console.warn(`⚠️ Live price refresh failed for ${signal.symbol}:`, error.message || error);
+    }
+    return signal;
+  }));
 }
 
 function protectExecutionData(signal) {
   const safeSignal = { ...signal };
   const status = safeSignal.lifecycle?.status || safeSignal.signalState || safeSignal.status;
-
   if (!LIVE_STATUSES.has(status)) return safeSignal;
 
   delete safeSignal.entry;
@@ -203,7 +172,6 @@ function protectExecutionData(signal) {
       });
     }
   }
-
   return safeSignal;
 }
 
@@ -211,10 +179,11 @@ async function signalsRoutes(req, res) {
   if (req.method !== "GET" || !req.url.startsWith("/api/signals")) return false;
 
   return requireAuth(req, res, async () => {
+    let account = null;
+    let access = getAccessState(null);
+
     try {
       const uid = req.user.uid;
-      let account = null;
-
       try {
         const accountSnap = await userRef(uid).get();
         account = accountSnap.exists ? accountSnap.data() : null;
@@ -222,9 +191,9 @@ async function signalsRoutes(req, res) {
         console.warn("⚠️ Account lookup unavailable; continuing in locked mode:", error.message || error);
       }
 
-      const access = getAccessState(account);
-      let scannerData;
+      access = getAccessState(account);
 
+      let scannerData;
       try {
         scannerData = await readScannerSnapshot();
       } catch (error) {
@@ -240,9 +209,7 @@ async function signalsRoutes(req, res) {
           : [];
 
       const responseSignals = await refreshLivePrices(sourceSignals);
-      const safeSignals = access.hasAccess
-        ? responseSignals
-        : responseSignals.map(protectExecutionData);
+      const safeSignals = access.hasAccess ? responseSignals : responseSignals.map(protectExecutionData);
 
       return json(res, 200, {
         ok: true,
@@ -256,11 +223,34 @@ async function signalsRoutes(req, res) {
         },
       });
     } catch (error) {
-      console.error("❌ Signals route failed:", error.stack || error.message || error);
-      return json(res, 500, {
-        ok: false,
-        error: "Failed to load market signals",
-        code: "SIGNALS_FETCH_FAILED",
+      console.error("❌ Signals route degraded:", error.stack || error.message || error);
+
+      let fallbackSignals = [];
+      try {
+        fallbackSignals = await buildMarketFallback();
+      } catch (fallbackError) {
+        console.error("❌ Signals final fallback failed:", fallbackError.stack || fallbackError.message || fallbackError);
+      }
+
+      return json(res, 200, {
+        ok: true,
+        data: {
+          signals: fallbackSignals,
+          scanResults: fallbackSignals,
+          access,
+          subscribeRequired: !access.hasAccess,
+          scanner: {
+            status: "DEGRADED",
+            source: fallbackSignals.length > 0 ? "bybit-market-fallback" : "unavailable",
+            scannedSymbols: 0,
+            publishedSignals: 0,
+            readySignals: 0,
+            waitSignals: fallbackSignals.length,
+            errorSignals: 0,
+            updatedAt: new Date().toISOString(),
+          },
+          degraded: true,
+        },
       });
     }
   });
