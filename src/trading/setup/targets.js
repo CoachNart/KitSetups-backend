@@ -12,8 +12,8 @@ function rr(entry, stop, target, direction) {
 }
 
 function buildTargets({ entry, stop, direction, liquidity }) {
-  if (!finite(entry) || !finite(stop)) return { valid: false, targets: [], riskReward: null, reason: 'Entry and stop are required' };
-  if (direction !== 'LONG' && direction !== 'SHORT') return { valid: false, targets: [], riskReward: null, reason: 'Invalid trade direction' };
+  if (!finite(entry) || !finite(stop)) return { valid: false, targets: [], riskReward: null, tp1RiskReward: null, reason: 'Entry and stop are required' };
+  if (direction !== 'LONG' && direction !== 'SHORT') return { valid: false, targets: [], riskReward: null, tp1RiskReward: null, reason: 'Invalid trade direction' };
 
   const candidates = [];
   for (const timeframe of TIMEFRAMES) {
@@ -46,12 +46,13 @@ function buildTargets({ entry, stop, direction, liquidity }) {
       valid: false,
       targets: [],
       riskReward: null,
+      tp1RiskReward: null,
       reason: `No genuine directional liquidity reaches the minimum ${MINIMUM_RISK_REWARD}R objective`,
     };
   }
 
-  // TP1 is the nearest *tradable* objective, not blindly the nearest level.
-  // Prefer >=2R when available, but never fabricate a level to reach 2R.
+  // TP1 is the nearest meaningful tradable objective, with a hard minimum of 1.5R.
+  // Prefer a >=2R TP1 when genuine liquidity supports it, but never fabricate a level.
   const preferredIndex = unique.findIndex((candidate) => candidate.riskReward >= PREFERRED_RR);
   const start = preferredIndex >= 0 ? preferredIndex : 0;
   const selected = unique.slice(start, start + 3);
@@ -61,15 +62,20 @@ function buildTargets({ entry, stop, direction, liquidity }) {
     ...candidate,
   }));
 
+  const tp1RiskReward = targets[0].riskReward;
+  const overallRiskReward = targets[targets.length - 1].riskReward;
+
   return {
-    valid: true,
+    valid: tp1RiskReward >= MINIMUM_RISK_REWARD,
     targets,
-    riskReward: targets[0].riskReward,
+    // Overall RR is the RR of the furthest selected target, not TP1.
+    riskReward: overallRiskReward,
+    tp1RiskReward,
     preferredRiskReward: PREFERRED_RR,
     minimumRiskReward: MINIMUM_RISK_REWARD,
-    reason: targets[0].riskReward >= PREFERRED_RR
-      ? 'TP1 uses the nearest meaningful directional liquidity at or above the preferred 2R objective'
-      : `TP1 uses the nearest meaningful directional liquidity at ${targets[0].riskReward.toFixed(2)}R; 2R was not available without fabricating a target`,
+    reason: tp1RiskReward >= PREFERRED_RR
+      ? `TP1 uses genuine directional liquidity at ${tp1RiskReward.toFixed(2)}R; overall RR is ${overallRiskReward.toFixed(2)}R`
+      : `TP1 uses genuine directional liquidity at ${tp1RiskReward.toFixed(2)}R; 2R was not available without fabricating a target; overall RR is ${overallRiskReward.toFixed(2)}R`,
   };
 }
 
