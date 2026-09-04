@@ -110,7 +110,6 @@ function selectDirection(args) {
   if (!candidates.length) return null;
   const best = candidates[0];
   const second = candidates[1];
-  // Mixed evidence lowers confidence through scoring; it does not become a hard gate.
   if (second && second.score >= best.score - 3) return best.score >= 45 ? best : null;
   return best.score >= 35 ? best : null;
 }
@@ -132,8 +131,6 @@ function entryForSetup({ marketData, structures, setup }) {
 
   if (result.valid) return result;
 
-  // A valid structural pullback can be executable without a fresh break on the
-  // 30m chart. Use the latest protected execution swing as the actual level.
   if (setup.type === 'PULLBACK') {
     const point = setup.direction === 'LONG'
       ? structures?.['30m']?.protectedLow
@@ -231,11 +228,16 @@ async function analyzeSymbol(symbol) {
     entry: entry.price,
     stop: stop.stop,
     riskReward: targetResult.riskReward,
+    tp1RiskReward: targetResult.tp1RiskReward,
     targets: targetResult.targets,
   });
 
   if (quality.score < PUBLISH_THRESHOLD) {
     return wait(symbol, price, 'quality', `Setup quality is ${quality.score}/100; publication threshold is ${PUBLISH_THRESHOLD}`, analysis);
+  }
+
+  if (targetResult.tp1RiskReward < targetResult.minimumRiskReward) {
+    return wait(symbol, price, 'targets', `TP1 is ${targetResult.tp1RiskReward.toFixed(2)}R; minimum publication RR is ${targetResult.minimumRiskReward}R`, analysis);
   }
 
   const validation = finalValidation({
@@ -256,6 +258,8 @@ async function analyzeSymbol(symbol) {
     entry: entry.price,
     stop: stop.stop,
     targets: targetResult.targets,
+    riskReward: targetResult.riskReward,
+    tp1RiskReward: targetResult.tp1RiskReward,
     quality,
     thesis: buildThesis({ setup, entry, stop, targets: targetResult.targets, quality }),
     reasons: [...setup.reasons, ...quality.reasons, targetResult.reason],
