@@ -8,7 +8,7 @@ const MIN_ACCEPTABLE_RR = 1.5;
 function finite(v) { return Number.isFinite(Number(v)); }
 function clamp(value, min = 0, max = 1) { return Math.max(min, Math.min(max, Number(value) || 0)); }
 
-function scoreSetup({ direction, setupType, setup, context, structures, liquidity, momentum, entry, stop, riskReward, targets = [] }) {
+function scoreSetup({ direction, setupType, setup, context, structures, liquidity, momentum, entry, stop, riskReward, tp1RiskReward, targets = [] }) {
   if (direction !== 'LONG' && direction !== 'SHORT') {
     return { valid: false, score: 0, grade: 'F', confidence: 'LOW', minimumScore: MIN_PUBLISH_SCORE, components: {}, reasons: ['Invalid setup direction'] };
   }
@@ -23,16 +23,18 @@ function scoreSetup({ direction, setupType, setup, context, structures, liquidit
   const hasBreak = Boolean(latestBreak && finite(latestBreak.level));
   const hasSweep = Boolean(setup?.sweep);
   const riskPct = finite(entry) && finite(stop) && Number(entry) !== 0 ? Math.abs(Number(entry) - Number(stop)) / Math.abs(Number(entry)) : null;
-  const rr = finite(riskReward) ? Number(riskReward) : 0;
+  const overallRR = finite(riskReward) ? Number(riskReward) : 0;
+  const tp1RR = finite(tp1RiskReward) ? Number(tp1RiskReward) : Number(targets[0]?.riskReward || 0);
 
   // Weights: 20 + 20 + 15 + 15 + 10 + 15 + 5 = 100.
+  // RR scoring uses the overall (furthest selected target) RR.
   const components = {
     higherTimeframe: Math.round(clamp(macroCount / 3) * 20),
     executionStructure: Math.round(clamp(executionCount / 2) * 20),
     liquidity: Math.round(clamp((directionalTargets.length ? 0.65 : 0) + (externalTargets.length ? 0.35 : 0) + (hasSweep ? 0.10 : 0)) * 15),
     entryQuality: Math.round(clamp((hasBreak ? 0.55 : 0) + (['RETEST', 'CONTINUATION', 'REVERSAL'].includes(setupType) ? 0.35 : 0)) * 15),
     stopQuality: riskPct === null ? 5 : riskPct <= 0.025 ? 10 : riskPct <= 0.05 ? 8 : 6,
-    rewardRR: rr >= 3 ? 15 : rr >= 2.5 ? 13 : rr >= 2 ? 11 : rr >= 1.75 ? 9 : rr >= 1.5 ? 7 : 0,
+    rewardRR: overallRR >= 3 ? 15 : overallRR >= 2.5 ? 13 : overallRR >= 2 ? 11 : overallRR >= 1.75 ? 9 : overallRR >= 1.5 ? 7 : 0,
     momentumContext: Math.round(clamp(momentumCount / 2) * 5),
   };
 
@@ -43,7 +45,8 @@ function scoreSetup({ direction, setupType, setup, context, structures, liquidit
 
   const grade = score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F';
   const confidence = score >= 85 ? 'HIGH' : score >= 70 ? 'MEDIUM' : 'LOW';
-  const valid = score >= MIN_PUBLISH_SCORE && rr >= MIN_ACCEPTABLE_RR && directionalTargets.length > 0;
+  // Publication requires TP1 itself to reach the hard 1.5R minimum.
+  const valid = score >= MIN_PUBLISH_SCORE && tp1RR >= MIN_ACCEPTABLE_RR && directionalTargets.length > 0;
 
   const reasons = [
     `${macroCount}/3 higher-timeframe structures support ${direction}`,
@@ -53,9 +56,9 @@ function scoreSetup({ direction, setupType, setup, context, structures, liquidit
   if (hasSweep) reasons.push('Recent opposing liquidity sweep strengthens the setup');
   if (externalTargets.length) reasons.push('External liquidity provides a meaningful objective');
   reasons.push(momentumCount > 0 ? `${momentumCount}/2 execution momentum readings support direction` : 'Momentum is neutral; structure remains the primary signal');
-  if (rr >= MIN_PREFERRED_RR) reasons.push(`${rr.toFixed(2)}R to TP1`);
-  else if (rr >= MIN_ACCEPTABLE_RR) reasons.push(`${rr.toFixed(2)}R to TP1; acceptable but below the preferred 2R`);
-  else reasons.push('Reward/risk is below the acceptable threshold');
+  if (tp1RR >= MIN_PREFERRED_RR) reasons.push(`TP1 ${tp1RR.toFixed(2)}R; overall RR ${overallRR.toFixed(2)}R`);
+  else if (tp1RR >= MIN_ACCEPTABLE_RR) reasons.push(`TP1 ${tp1RR.toFixed(2)}R; overall RR ${overallRR.toFixed(2)}R`);
+  else reasons.push(`TP1 is ${tp1RR.toFixed(2)}R; below the ${MIN_ACCEPTABLE_RR}R publication minimum`);
 
   return {
     valid,
@@ -65,6 +68,8 @@ function scoreSetup({ direction, setupType, setup, context, structures, liquidit
     minimumScore: MIN_PUBLISH_SCORE,
     minimumRiskReward: MIN_ACCEPTABLE_RR,
     preferredRiskReward: MIN_PREFERRED_RR,
+    tp1RiskReward: tp1RR,
+    overallRiskReward: overallRR,
     components,
     reasons,
     generatedAt: new Date().toISOString(),
