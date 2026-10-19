@@ -12,7 +12,7 @@ const { STATES } = require('../../lifecycle/state');
 const { TIMEFRAMES, isTimeframe, createSetupResult } = require('../contract');
 const { TIMEFRAMES: DATA_TIMEFRAMES, INTERVALS } = require('../data/marketData');
 const { TIMEFRAMES: STRUCTURE_TIMEFRAMES } = require('../analysis/structure');
-const { TIMEFRAMES: MOMENTUM_TIMEFRAMES } = require('../analysis/momentum');
+const { analyzeMomentum } = require('../analysis/momentum');
 
 // Supported analysis and execution timeframes are allowlisted at every engine layer.
 const EXPECTED_TIMEFRAMES = ['1w', '1d', '4h', '1h', '30m'];
@@ -20,7 +20,7 @@ assert.deepEqual(TIMEFRAMES, EXPECTED_TIMEFRAMES);
 assert.deepEqual(Object.keys(DATA_TIMEFRAMES), EXPECTED_TIMEFRAMES);
 assert.deepEqual(Object.keys(INTERVALS), EXPECTED_TIMEFRAMES);
 assert.deepEqual(STRUCTURE_TIMEFRAMES, EXPECTED_TIMEFRAMES);
-assert.deepEqual(MOMENTUM_TIMEFRAMES, EXPECTED_TIMEFRAMES);
+assert.deepEqual(Object.keys(analyzeMomentum({}).timeframes), EXPECTED_TIMEFRAMES);
 assert.equal(isTimeframe('30m'), true);
 assert.equal(isTimeframe('1h'), true);
 assert.equal(isTimeframe('15' + 'm'), false);
