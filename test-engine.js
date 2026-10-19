@@ -16,7 +16,7 @@ const { analyzeMarket } = require("./src/tools/marketEngine");
   console.log("Timeframes:", timeframes);
 
   const timeframeMinutes = (value) => {
-    const match = String(value).toLowerCase().match(/^(\\d+)(m|h|d|w)$/);
+    const match = String(value).toLowerCase().match(/^(\d+)(m|h|d|w)$/);
     if (!match) return Number.POSITIVE_INFINITY;
     const amount = Number(match[1]);
     const unit = match[2];
