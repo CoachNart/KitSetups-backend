@@ -3,6 +3,7 @@ const { requireAuth } = require("../middleware/auth");
 const { getAccessState } = require("../services/access");
 const { analyzeTradingMarket } = require("../services/tradingEngine");
 const { fetchTicker } = require("../trading/data/marketData");
+const { isTimeframe } = require("../trading/contract");
 
 const MARKET_INTELLIGENCE_COLLECTION = "marketIntelligence";
 const SIGNALS_COLLECTION = "signals";
@@ -18,6 +19,33 @@ function json(res, status, data) {
   });
 
   res.end(JSON.stringify(data));
+}
+
+function sanitizeTimeframeData(value, key = "") {
+  if (Array.isArray(value)) {
+    if (["availableTimeframes", "timeframes"].includes(key) && value.every((item) => typeof item === "string")) {
+      return value.filter((timeframe) => isTimeframe(timeframe.trim().toLowerCase()));
+    }
+    return value.map((item) => sanitizeTimeframeData(item));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([field]) => {
+          const normalized = field.trim().toLowerCase().replace(/\s+/g, "");
+          return !/^\d+[mhdw]$/.test(normalized) || isTimeframe(normalized);
+        })
+        .map(([field, item]) => [field, sanitizeTimeframeData(item, field)]),
+    );
+  }
+
+  if (typeof value === "string" && key.toLowerCase() === "timeframe") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "multi-timeframe" || isTimeframe(normalized) ? normalized : null;
+  }
+
+  return value;
 }
 
 function normalizeSymbol(value) {
@@ -62,7 +90,7 @@ function buildDecision(analysis) {
 }
 
 function toAnalysisResponse(raw, access = null, options = {}) {
-  const source = raw?.analysis || raw || {};
+  const source = sanitizeTimeframeData(raw?.analysis || raw || {});
   const context = source?.evidence?.context || source?.context || null;
   const structures = source?.evidence?.structures || source?.structures || null;
   const liquidity = source?.evidence?.liquidity || source?.liquidity || null;
@@ -78,7 +106,7 @@ function toAnalysisResponse(raw, access = null, options = {}) {
 
   return {
     symbol: normalizeSymbol(source?.symbol),
-    timeframe: source?.timeframe || "multi-timeframe",
+    timeframe: isTimeframe(source?.timeframe) ? source.timeframe : "multi-timeframe",
     timestamp:
       source?.generatedAt || source?.updatedAt || new Date().toISOString(),
     market: {

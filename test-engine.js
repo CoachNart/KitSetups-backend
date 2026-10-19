@@ -15,13 +15,20 @@ const { analyzeMarket } = require("./src/tools/marketEngine");
 
   console.log("Timeframes:", timeframes);
 
-  // 15M must be completely removed.
+  const timeframeMinutes = (value) => {
+    const match = String(value).toLowerCase().match(/^(\d+)(m|h|d|w)$/);
+    if (!match) return Number.POSITIVE_INFINITY;
+    const amount = Number(match[1]);
+    const unit = match[2];
+    return amount * (unit === "m" ? 1 : unit === "h" ? 60 : unit === "d" ? 1440 : 10080);
+  };
+
+  // No timeframe below the 30-minute execution floor may reach the engine output.
   assert(
-    !timeframes.includes("15m"),
-    "15M timeframe is still present"
+    !timeframes.some((timeframe) => timeframeMinutes(timeframe) < 30),
+    "An unsupported sub-30-minute timeframe is still present"
   );
 
-  // 30M is now the minimum execution timeframe.
   assert(
     timeframes.includes("30m"),
     "30M timeframe is missing"
