@@ -33,8 +33,8 @@ function sanitizeTimeframeData(value, key = "") {
     return Object.fromEntries(
       Object.entries(value)
         .filter(([field]) => {
-          const normalized = field.trim().toLowerCase().replace(/\\s+/g, "");
-          return !/^\\d+[mhdw]$/.test(normalized) || isTimeframe(normalized);
+          const normalized = field.trim().toLowerCase().replace(/\s+/g, "");
+          return !/^\d+[mhdw]$/.test(normalized) || isTimeframe(normalized);
         })
         .map(([field, item]) => [field, sanitizeTimeframeData(item, field)]),
     );
